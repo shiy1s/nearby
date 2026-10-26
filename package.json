@@ -1,0 +1,20 @@
+{
+  "name": "nearby-lan",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test.mjs cloud/test.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.39.0",
+    "@vercel/blob": "^2.8.2",
+    "esbuild": "^0.28.2"
+  },
+  "packageManager": "pnpm@11.25.0"
+}

@@ -1,0 +1,8 @@
+.nearby-files/
+.nearby-data/
+node_modules/
+dist/
+.vercel/
+.env
+.env.*
+!.env.example

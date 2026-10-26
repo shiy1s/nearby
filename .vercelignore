@@ -1,0 +1,10 @@
+.nearby-data
+.nearby-files
+.git
+node_modules
+.env
+.env.*
+!.env.example
+*.log
+test.mjs
+cloud/test.mjs
