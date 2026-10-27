@@ -2,6 +2,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
 const MAX_FILE = 1024 ** 3;
 const LIFE = 24 * 60 * 60 * 1000;
+const SESSION_SECONDS = 34560000;
 const id = () => randomBytes(24).toString('hex');
 const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
@@ -23,23 +24,32 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       const redis = getRedis();
       const url = new URL(req.url, 'https://' + req.headers.host);
       const path = url.searchParams.has('route') ? '/api/' + url.searchParams.get('route') : url.pathname;
+      if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'Cross-site requests are not allowed.');
       if (req.headers.origin && req.headers.origin !== `https://${req.headers.host}` && !(env.NODE_ENV !== 'production' && req.headers.origin === `http://${req.headers.host}`)) fail(403, 'Origin not allowed.');
       async function body() {
-        if (req.body !== undefined) { const value = typeof req.body === 'string' ? JSON.parse(req.body) : req.body; if (JSON.stringify(value).length > 24000) fail(413, 'Request too large.'); return value; }
-        let text = ''; for await (const chunk of req) { text += chunk; if (text.length > 24000) fail(413, 'Request too large.'); }
-        return JSON.parse(text);
+        let value = req.body;
+        if (value === undefined) {
+          const chunks = []; let size = 0;
+          for await (const chunk of req) { const bytes = Buffer.from(chunk); size += bytes.length; if (size > 24000) fail(413, 'Request too large.'); chunks.push(bytes); }
+          value = Buffer.concat(chunks).toString('utf8');
+        }
+        if (Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value)) > 24000) fail(413, 'Request too large.');
+        if (typeof value === 'string') { try { value = JSON.parse(value); } catch { fail(400, 'Invalid JSON.'); } }
+        if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, 'Expected a JSON object.');
+        return value;
       }
       async function limit(label, maximum, seconds) {
         const count = await redis.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n", [key('limit:' + label)], [seconds]);
-        if (count > maximum) fail(429, 'Too many requests. Please try again later.');
+        if (count > maximum) { res.setHeader('Retry-After', String(seconds)); fail(429, 'Too many requests. Please try again later.'); }
       }
       const cookie = (req.headers.cookie || '').split(';').map(v => v.trim()).find(v => v.startsWith('nearby='))?.slice(7);
       let session;
       async function authenticate() {
         if (session) return session;
-        const device = cookie && await redis.get(key('session:' + hash(cookie)));
+        const device = cookie && /^[a-f0-9]{48}$/.test(cookie) && await redis.get(key('session:' + hash(cookie)));
         session = device && await redis.hget(key('devices'), device);
         if (!session) fail(401, 'Pair this browser first.');
+        await redis.set(key('session:' + hash(cookie)), session.device, { ex: SESSION_SECONDS });
         res.setHeader('Set-Cookie', `nearby=${cookie}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=34560000`);
         return session;
       }
@@ -87,11 +97,12 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       if (path === '/api/join' && req.method === 'POST') {
         const ip = req.headers['x-vercel-forwarded-for'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
         await limit('join:' + hash(String(ip)), 10, 60);
+        await limit('join-hour:' + hash(String(ip)), 30, 3600);
         const data = await body();
         if (typeof data.code !== 'string' || !same(data.code, env.JOIN_CODE)) fail(401, 'That pairing code is incorrect.');
         const name = cleanName(data.name); if (!name) fail(400, 'Enter a device name.');
         const token = id(); const user = { device: id(), name };
-        await redis.multi().hset(key('devices'), { [user.device]: user }).set(key('session:' + hash(token)), user.device).exec();
+        await redis.multi().hset(key('devices'), { [user.device]: user }).set(key('session:' + hash(token)), user.device, { ex: SESSION_SECONDS }).exec();
         res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=34560000`);
         return reply(200, user);
       }
@@ -100,16 +111,18 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         const result = await handleUpload({ request: req, body: data,
           onBeforeGenerateToken: async (pathname, clientPayload) => {
             const user = await authenticate();
+            await limit('upload-token:' + user.device, 60, 3600);
             const intentId = JSON.parse(clientPayload || '{}').id;
             const intent = await redis.get(key('file:' + intentId));
             if (!intent || intent.sender !== user.device || intent.pathname !== pathname || intent.complete || intent.expires < Date.now()) fail(403, 'Upload not authorized.');
-            return { maximumSizeInBytes: intent.size, addRandomSuffix: false, allowOverwrite: false, validUntil: Date.now() + 3600000, tokenPayload: JSON.stringify({ id: intentId }) };
+            return { maximumSizeInBytes: intent.size, allowedContentTypes: ['application/octet-stream'], addRandomSuffix: false, allowOverwrite: false, validUntil: Date.now() + 3600000, tokenPayload: JSON.stringify({ id: intentId }) };
           },
           onUploadCompleted: async ({ tokenPayload }) => { await finishUpload(JSON.parse(tokenPayload).id); },
         });
         return reply(200, result);
       }
       const user = await authenticate();
+      await limit('api:' + user.device, 240, 60);
       if (path === '/api/me' && req.method === 'GET') return reply(200, user);
       if (path === '/api/state' && req.method === 'GET') {
         await redis.set(key('presence:' + user.device), Date.now(), { ex: 40 });
@@ -152,7 +165,7 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         const file = await redis.get(key('file:' + path.slice('/api/files/'.length)));
         if (!file || !file.complete || file.expires < Date.now()) fail(404, 'This file is unavailable or expired. Ask the sender to share it again.');
         if (!file.allowed.includes(user.device)) fail(403, 'This file was shared with another device or group.');
-        const validUntil = Math.min(file.expires, Date.now() + 3600000);
+        const validUntil = Math.min(file.expires, Date.now() + 5 * 60000);
         const token = await blob.issueSignedToken({ pathname: file.pathname, operations: ['get'], validUntil });
         const { presignedUrl } = await blob.presignUrl(token, { operation: 'get', pathname: file.pathname, access: 'private', validUntil });
         res.statusCode = 302; res.setHeader('Location', blob.getDownloadUrl(presignedUrl)); res.end(); return;

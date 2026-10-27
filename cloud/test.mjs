@@ -4,8 +4,9 @@ import { createHandler } from './handler.mjs';
 
 class MemoryRedis {
   values = new Map();
+  expirations = new Map();
   async get(k) { return structuredClone(this.values.get(k) ?? null); }
-  async set(k, v) { this.values.set(k, structuredClone(v)); return 'OK'; }
+  async set(k, v, options) { this.values.set(k, structuredClone(v)); if (options?.ex) this.expirations.set(k, options.ex); return 'OK'; }
   async del(k) { return this.values.delete(k); }
   async hget(k, f) { return structuredClone(this.values.get(k)?.[f] ?? null); }
   async hgetall(k) { return structuredClone(this.values.get(k) ?? null); }
@@ -25,7 +26,7 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   const blob = {
     head: async pathname => stored.get(pathname) || Promise.reject(Error('Missing blob')),
     del: async pathname => stored.delete(pathname),
-    issueSignedToken: async options => { assert.deepEqual(options.operations, ['get']); return options; },
+    issueSignedToken: async options => { assert.deepEqual(options.operations, ['get']); assert(options.validUntil <= Date.now() + 300000); return options; },
     presignUrl: async (token, options) => { assert.equal(options.access, 'private'); assert.equal(token.pathname, options.pathname); return { presignedUrl: 'https://store.private.blob.vercel-storage.com/' + options.pathname + '?signed=1' }; },
     getDownloadUrl: url => url + '&download=1',
   };
@@ -43,6 +44,13 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   async function pair(name) { const r = await request('/api/join', null, { name, code: env.JOIN_CODE }); assert.equal(r.statusCode, 200); assert.match(r.headers['set-cookie'], /Secure/); return { ...r.body, cookie: r.headers['set-cookie'].split(';')[0] }; }
   const alice = await pair('Laptop'), bob = await pair('Phone'), outsider = await pair('Other');
   assert.equal((await request('/api/me')).statusCode, 401);
+  assert.equal((await request('/api/message', alice, null)).statusCode, 400);
+  assert.equal((await request('/api/message', alice, '{broken')).statusCode, 400);
+  assert.equal((await request('/api/message', alice, [])).statusCode, 400);
+  assert.equal((await request('/api/message', alice, { text: '🚀'.repeat(7000) })).statusCode, 413);
+  assert.equal((await request('/api/me', alice, undefined, { 'sec-fetch-site': 'cross-site' })).statusCode, 403);
+  assert.equal((await request('/api/me', null, undefined, { cookie: 'nearby=invalid' })).statusCode, 401);
+  assert.equal([...redis.expirations.entries()].filter(([k, seconds]) => k.includes('session:') && seconds === 34560000).length, 3);
   const group = (await request('/api/groups', alice, { name: 'Family', members: [bob.device] })).body;
   assert.equal((await request('/api/message', outsider, { target: group.id, text: 'No access' })).statusCode, 403);
   assert.equal((await request('/api/message', alice, { target: group.id, text: 'Delivered while offline' })).statusCode, 200);
@@ -57,6 +65,7 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   const intent = (await request('/api/upload-intent', alice, { target: group.id, name: 'secret.bin', size: 20 })).body;
   const auth = await request('/api/upload', alice, { id: intent.id, pathname: intent.pathname });
   assert.equal(auth.body.maximumSizeInBytes, 20); assert.equal(auth.body.allowOverwrite, false);
+  assert.deepEqual(auth.body.allowedContentTypes, ['application/octet-stream']);
   assert.equal((await request('/api/upload', outsider, { id: intent.id, pathname: intent.pathname })).statusCode, 403);
   assert.equal((await request('/api/upload', alice, { id: intent.id, pathname: 'other/path' })).statusCode, 403);
   stored.set(intent.pathname, { pathname: intent.pathname, size: 19 });
@@ -75,6 +84,15 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.equal(stored.has(intent.pathname), false);
   // Rewritten Vercel API requests reach the same endpoint.
   assert.equal((await request('/api/index?route=me', bob)).body.device, bob.device);
+  for (let n = 0; n < 10; n++) assert.equal((await request('/api/join', null, { name: 'Guess', code: 'wrong' }, { 'x-vercel-forwarded-for': 'test-attacker' })).statusCode, 401);
+  const blocked = await request('/api/join', null, { name: 'Guess', code: env.JOIN_CODE }, { 'x-vercel-forwarded-for': 'test-attacker' });
+  assert.equal(blocked.statusCode, 429); assert.equal(blocked.headers['retry-after'], '60');
+  // Simulate minute windows rolling over while preserving the hourly counter.
+  for (let n = 0; n < 21; n++) {
+    for (const k of redis.values.keys()) if (k.includes(':limit:join:')) redis.values.delete(k);
+    const result = await request('/api/join', null, { name: 'Guess', code: 'wrong' }, { 'x-vercel-forwarded-for': 'test-attacker' });
+    assert.equal(result.statusCode, n < 20 ? 401 : 429);
+  }
 });
 
 test('hosted build fails closed when secrets are missing', async () => {
