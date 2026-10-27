@@ -17,8 +17,8 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
     res.setHeader('Referrer-Policy', 'no-referrer');
     const reply = (status, value) => { res.statusCode = status; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
     try {
-      if (!env.JOIN_CODE || env.JOIN_CODE.length < 16 || !(env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL) || !(env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN) || !env.BLOB_READ_WRITE_TOKEN) {
-        return reply(503, { error: 'Hosting setup is incomplete. Configure the database, private Blob store, and a JOIN_CODE of at least 16 characters.' });
+      if (!env.JOIN_CODE || env.JOIN_CODE.length < 6 || !(env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL) || !(env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN) || !env.BLOB_READ_WRITE_TOKEN) {
+        return reply(503, { error: 'Hosting setup is incomplete. Configure the database, private Blob store, and a JOIN_CODE of at least 6 characters.' });
       }
       const redis = getRedis();
       const url = new URL(req.url, 'https://' + req.headers.host);

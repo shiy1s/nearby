@@ -1,6 +1,18 @@
 const $ = s => document.querySelector(s);
 let me, peers = [], target = 'all', items = [], events, uploading = false;
 let groups = [];
+const unread = new Map();
+let knownItems = new Set(), historyLoaded = false;
+function conversation(item) { return item.target === 'all' || item.target.startsWith('group-') ? item.target : item.sender === me.device ? item.target : item.sender; }
+function receive(item) {
+  if (knownItems.has(item.id)) return;
+  knownItems.add(item.id);
+  const channel = conversation(item);
+  if (item.sender !== me.device && channel !== target) {
+    unread.set(channel, (unread.get(channel) || 0) + 1);
+    toast(`${item.name} sent ${item.kind === 'file' ? 'a file' : 'a message'}. Open the conversation marked NEW.`);
+  }
+}
 let reconnectTimer, restoring = false, lastEvent = Date.now();
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
@@ -18,21 +30,25 @@ async function restoreConnection() {
       $('#connection').textContent = 'Ready to pair';
       return;
     }
-    if (!response.ok) throw Error('Host unavailable');
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw Error(result.error || 'Service unavailable. Retrying…');
+    }
     enter(await response.json());
-  } catch {
-    $('#connection').textContent = 'Waiting for network…';
+  } catch (error) {
+    $('#connection').textContent = 'Reconnecting…';
+    if (error.message && !/fetch|timeout|abort/i.test(error.message)) toast(error.message);
     scheduleReconnect();
   } finally { restoring = false; }
 }
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 6000); }
 async function api(path, data) { const r = await fetch(path, data ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {}); const result = await r.json(); if (!r.ok) throw Error(result.error); return result; }
-function select(device) { target = device; renderPeers(); renderGroups(); renderFeed(); const group = groups.find(g => g.id === target); $('#target-title').textContent = group?.name || (target === 'all' ? 'Everyone' : peers.find(p => p.device === target)?.name || 'Offline device'); $('#target-subtitle').textContent = group ? `${group.members.length} members · Saved group` : target === 'all' ? 'Messages and files shared with the circle' : 'Only you and this device'; }
+function select(device) { target = device; unread.delete(device); renderPeers(); renderGroups(); renderFeed(true); const group = groups.find(g => g.id === target); $('#target-title').textContent = group?.name || (target === 'all' ? 'Everyone' : peers.find(p => p.device === target)?.name || 'Offline device'); $('#target-subtitle').textContent = group ? `${group.members.length} members · Saved group` : target === 'all' ? 'Messages and files shared with the circle' : 'Only you and this device'; }
 function renderGroups() {
   $('#groups').replaceChildren();
   for (const group of groups) {
     const button = document.createElement('button'); button.className = `peer${target === group.id ? ' selected' : ''}`;
-    button.textContent = `◎ ${group.name}`; button.onclick = () => select(group.id); $('#groups').append(button);
+    button.textContent = `◎ ${group.name}${unread.has(group.id) ? ' · NEW ' + unread.get(group.id) : ''}`; button.onclick = () => select(group.id); $('#groups').append(button);
   }
 }
 $('#create-group').onclick = () => {
@@ -57,15 +73,18 @@ $('#group-form').onsubmit = async e => {
 };
 function renderPeers() {
   $('#count').textContent = peers.length; $('#everyone').classList.toggle('selected', target === 'all'); $('#peers').replaceChildren();
+  $('#everyone').querySelector('small').textContent = unread.has('all') ? `NEW ${unread.get('all')}` : 'Your whole circle';
   for (const p of peers.filter(p => p.device !== me.device)) {
     const b = document.createElement('button'); b.className = `peer${target === p.device ? ' selected' : ''}`;
     const icon = document.createElement('span'); icon.className = 'avatar'; icon.textContent = '▱';
     const label = document.createElement('span'); label.textContent = p.name;
-    const sub = document.createElement('small'); sub.textContent = p.online ? 'Connected' : 'Paired · offline'; label.append(sub); b.append(icon, label); b.onclick = () => select(p.device); $('#peers').append(b);
+    const sub = document.createElement('small'); sub.textContent = unread.has(p.device) ? `NEW ${unread.get(p.device)}` : p.online ? 'Connected' : 'Paired · offline'; label.append(sub); b.append(icon, label); b.onclick = () => select(p.device); $('#peers').append(b);
   }
 }
 const size = n => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`;
-function renderFeed() {
+function renderFeed(forceBottom = false) {
+  const feed = $('#feed'), previousTop = feed.scrollTop;
+  const nearBottom = feed.scrollHeight - feed.clientHeight - previousTop < 70;
   const visible = items.filter(i => target === 'all' || target.startsWith('group-') ? i.target === target : !i.target.startsWith('group-') && i.target !== 'all' && (i.sender === target || i.target === target));
   $('#feed').replaceChildren();
   if (!visible.length) { const empty = document.createElement('div'); empty.className = 'empty'; const h = document.createElement('h3'); h.textContent = 'A small space to share.'; const p = document.createElement('p'); p.textContent = 'Send a message or use + to share files.'; empty.append(h,p); $('#feed').append(empty); }
@@ -73,10 +92,15 @@ function renderFeed() {
     const el = document.createElement('div'); el.className = `item${i.sender === me.device ? ' mine' : ''}`;
     const meta = document.createElement('small'); meta.textContent = `${i.sender === me.device ? 'You' : i.name} · ${new Date(i.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; el.append(meta);
     if (i.kind === 'message') { const p = document.createElement('p'); p.textContent = i.text; el.append(p); }
-    else { const a = document.createElement('a'); a.href = `/api/files/${i.id}`; a.download = i.filename; a.textContent = `↓ ${i.filename} · ${size(i.size)}`; el.append(a); }
+    else {
+      const expired = i.expires && i.expires <= Date.now();
+      const a = document.createElement(expired ? 'span' : 'a');
+      if (!expired) { a.href = `/api/files/${i.id}`; a.download = i.filename; a.target = '_blank'; a.rel = 'noopener'; }
+      a.textContent = `${expired ? 'Expired · ' : '↓ Download '}${i.filename} · ${size(i.size)}`; el.append(a);
+    }
     $('#feed').append(el);
   }
-  $('#feed').scrollTop = $('#feed').scrollHeight;
+  feed.scrollTop = forceBottom || nearBottom ? feed.scrollHeight : previousTop;
 }
 function enter(user) {
   clearTimeout(reconnectTimer);
@@ -89,12 +113,16 @@ function enter(user) {
   events.addEventListener('heartbeat', () => { lastEvent = Date.now(); });
   events.addEventListener('groups', e => { groups = JSON.parse(e.data); renderGroups(); });
   events.addEventListener('peers', e => { peers = JSON.parse(e.data); renderPeers(); });
-  events.addEventListener('history', e => { items = JSON.parse(e.data); renderFeed(); });
-  events.addEventListener('item', e => { const item = JSON.parse(e.data); if (!items.some(i => i.id === item.id)) items.push(item); items = items.slice(-100); renderFeed(); if (item.sender !== me.device && item.target !== 'all' && target !== item.sender && target !== item.target) toast(`${item.name} sent you ${item.kind === 'file' ? 'a file' : 'a message'}. Open the matching device or group to view it.`); });
+  events.addEventListener('history', e => {
+    items = JSON.parse(e.data);
+    if (historyLoaded) items.forEach(receive); else { knownItems = new Set(items.map(i => i.id)); historyLoaded = true; }
+    renderPeers(); renderGroups(); renderFeed();
+  });
+  events.addEventListener('item', e => { const item = JSON.parse(e.data); receive(item); if (!items.some(i => i.id === item.id)) items.push(item); items = items.slice(-100); renderPeers(); renderGroups(); renderFeed(); });
 }
 $('#join-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button'); button.disabled = true; try { enter(await api('/api/join', { name: $('#name').value, code: $('#code').value.trim() })); } catch (err) { toast(err.message); } finally { button.disabled = false; } };
 $('#everyone').onclick = () => select('all');
-$('#send-form').onsubmit = async e => { e.preventDefault(); const text = $('#message').value; if (!text.trim()) return; $('#send').disabled = true; try { await api('/api/message', { target, text }); $('#message').value = ''; } catch (err) { toast(err.message); } finally { $('#send').disabled = false; } };
+$('#send-form').onsubmit = async e => { e.preventDefault(); if ($('#send').disabled) return; const text = $('#message').value, destination = target; if (!text.trim()) return; $('#send').disabled = true; try { await api('/api/message', { target: destination, text }); if ($('#message').value === text && target === destination) $('#message').value = ''; events?.refresh?.(); } catch (err) { toast(err.message); } finally { $('#send').disabled = false; } };
 $('#message').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#send-form').requestSubmit(); } };
 $('#file').onchange = async e => {
   if (uploading) return; const selected = [...e.target.files], destination = target; uploading = true; $('#file').disabled = true;
@@ -133,7 +161,8 @@ $('#file').onchange = async e => {
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, selected.length) }, () => worker()));
-    toast(failures.length ? `${completed}/${selected.length} files shared. ${failures.join(' ')}` : 'Files shared. The recipient can now download them.');
+    const summary = failures.length ? `${completed}/${selected.length} files shared. Retry failed files: ${failures.join(' ')}` : 'Files shared. Open this conversation on the receiving device and tap Download.';
+    $('#transfer-result').textContent = summary; $('#transfer-result').hidden = false; toast(summary); events?.refresh?.();
   } catch (err) { toast(err.message); } finally { uploading = false; $('#file').disabled = false; $('#file').value = ''; $('#transfer').hidden = true; }
 };
 window.addEventListener('online', restoreConnection);
@@ -141,4 +170,5 @@ window.addEventListener('offline', () => { $('#connection').textContent = 'Waiti
 document.addEventListener('visibilitychange', () => { if (!document.hidden) restoreConnection(); });
 setInterval(() => { if (me && !document.hidden && Date.now() - lastEvent > 45000) restoreConnection(); }, 10000);
 restoreConnection();
+window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
 

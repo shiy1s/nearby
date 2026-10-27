@@ -21,7 +21,7 @@ class MemoryRedis {
 
 test('hosted pairing, offline groups, private uploads, expiry and cold starts', async () => {
   const redis = new MemoryRedis(), stored = new Map();
-  const env = { JOIN_CODE: 'a-long-private-pairing-code', UPSTASH_REDIS_REST_URL: 'https://example.test', UPSTASH_REDIS_REST_TOKEN: 'test', BLOB_READ_WRITE_TOKEN: 'test', CRON_SECRET: 'cleanup-secret', NODE_ENV: 'production' };
+  const env = { JOIN_CODE: '123456', UPSTASH_REDIS_REST_URL: 'https://example.test', UPSTASH_REDIS_REST_TOKEN: 'test', BLOB_READ_WRITE_TOKEN: 'test', CRON_SECRET: 'cleanup-secret', NODE_ENV: 'production' };
   const blob = {
     head: async pathname => stored.get(pathname) || Promise.reject(Error('Missing blob')),
     del: async pathname => stored.delete(pathname),

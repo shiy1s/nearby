@@ -8,7 +8,7 @@ This project has two modes. `node server.mjs` still runs the original LAN app. T
 2. Use **Other** as the framework, **Node.js 24.x**, build command `npm run build`, output directory `dist`. The included `vercel.json` configures the API route and daily cleanup.
 3. Connect an **Upstash Redis** database from the Vercel Marketplace. Confirm `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are configured.
 4. Create and connect a **private Vercel Blob store**. Supply its `BLOB_READ_WRITE_TOKEN` as a server-only environment variable. Do not use a public store: uploads explicitly request private access.
-5. Set `JOIN_CODE` to a strong private passphrase of at least 16 characters. Set `CRON_SECRET` to a separate random secret. These must never have a public/client prefix. `.env.example` lists the required names. Share only the pairing passphrase with people you want in your circle.
+5. Set `JOIN_CODE` to a strong private passphrase of at least 6 characters. Set `CRON_SECRET` to a separate random secret. These must never have a public/client prefix. `.env.example` lists the required names. Share only the pairing passphrase with people you want in your circle.
 6. Deploy. Open the resulting HTTPS address on each device, enter a device name and the shared pairing passphrase. Use the same stable production hostname later so the browser remembers its pairing.
 
 Production and preview deployments should use separate Redis databases and Blob stores to prevent test data and cleanup jobs affecting production. This is one private circle per deployment; anyone with the pairing passphrase can join it and see the device list and Everyone conversation. It is not a public multi-tenant service.
