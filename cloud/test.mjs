@@ -84,6 +84,16 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.equal(stored.has(intent.pathname), false);
   // Rewritten Vercel API requests reach the same endpoint.
   assert.equal((await request('/api/index?route=me', bob)).body.device, bob.device);
+  const messageId = state.history[0].id;
+  assert.equal((await request('/api/message/delete', outsider, { id: messageId, scope: 'everyone' })).statusCode, 404);
+  assert.equal((await request('/api/message/delete', bob, { id: messageId, scope: 'everyone' })).statusCode, 403);
+  assert.equal((await request('/api/message/delete', bob, { id: messageId, scope: 'me' })).statusCode, 200);
+  assert(!(await request('/api/state', bob)).body.history.some(i => i.id === messageId));
+  assert((await request('/api/state', alice)).body.history.some(i => i.id === messageId));
+  assert.equal((await request('/api/message/delete', alice, { id: messageId, scope: 'everyone' })).statusCode, 200);
+  handler = createHandler(dependencies);
+  assert(!(await request('/api/state', alice)).body.history.some(i => i.id === messageId));
+  assert.equal((await request('/api/message/delete', alice, { id: messageId, scope: 'bad' })).statusCode, 400);
   for (let n = 0; n < 10; n++) assert.equal((await request('/api/join', null, { name: 'Guess', code: 'wrong' }, { 'x-vercel-forwarded-for': 'test-attacker' })).statusCode, 401);
   const blocked = await request('/api/join', null, { name: 'Guess', code: env.JOIN_CODE }, { 'x-vercel-forwarded-for': 'test-attacker' });
   assert.equal(blocked.statusCode, 429); assert.equal(blocked.headers['retry-after'], '60');

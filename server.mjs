@@ -117,6 +117,19 @@ const server = http.createServer(async (req, res) => {
       req.on('close', () => { session.streams.delete(res); session.seen = Date.now(); presence(); });
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/message/delete') {
+      const data = await json(req);
+      if (!data || typeof data.id !== 'string' || !['me', 'everyone'].includes(data.scope)) return send(res, 400, { error: 'Choose a message and deletion option.' });
+      const item = session.history.find(i => i.id === data.id);
+      if (!item) return send(res, 404, { error: 'Message is no longer available.' });
+      if (item.kind !== 'message') return send(res, 400, { error: 'Only text messages can be deleted here.' });
+      if (data.scope === 'everyone' && item.sender !== session.device) return send(res, 403, { error: 'Only the sender can delete for everyone.' });
+      for (const recipient of data.scope === 'me' ? [session] : sessions.values()) {
+        recipient.history = recipient.history.filter(i => i.id !== item.id);
+        emit(recipient, 'history', recipient.history);
+      }
+      return send(res, 200, { ok: true });
+    }
     if (req.method === 'POST' && url.pathname === '/api/message') {
       const { target, text } = await json(req);
       if (groups.has(target) && !groups.get(target).members.includes(session.device)) return send(res, 403, { error: 'You are not a member of this group.' });

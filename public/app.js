@@ -93,7 +93,21 @@ function renderFeed(forceBottom = false) {
   for (const i of visible) {
     const el = document.createElement('div'); el.className = `item${i.sender === me.device ? ' mine' : ''}`;
     const meta = document.createElement('small'); meta.textContent = `${i.sender === me.device ? 'You' : i.name} · ${new Date(i.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; el.append(meta);
-    if (i.kind === 'message') { const p = document.createElement('p'); p.textContent = i.text; el.append(p); }
+    if (i.kind === 'message') {
+      const p = document.createElement('p'); p.textContent = i.text; el.append(p);
+      const actions = document.createElement('div'); actions.className = 'message-actions';
+      for (const scope of i.sender === me.device ? ['me', 'everyone'] : ['me']) {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = scope === 'me' ? 'Delete for me' : 'Delete for everyone';
+        button.onclick = async () => {
+          if (!confirm(scope === 'me' ? 'Remove this message from this device’s conversation?' : 'Delete this message for everyone? This cannot be undone.')) return;
+          button.disabled = true;
+          try { await api('/api/message/delete', { id: i.id, scope }); items = items.filter(item => item.id !== i.id); renderFeed(); events?.refresh?.(); toast(scope === 'me' ? 'Message deleted for you.' : 'Message deleted for everyone.'); }
+          catch (error) { toast(error.message); button.disabled = false; }
+        };
+        actions.append(button);
+      }
+      el.append(actions);
+    }
     else {
       const expired = i.expires && i.expires <= Date.now();
       const a = document.createElement(expired ? 'span' : 'a');

@@ -138,6 +138,22 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         const group = { id: 'group-' + id(), name: title, owner: user.device, members: [...new Set([user.device, ...members])] };
         await redis.hset(key('groups'), { [group.id]: group }); return reply(201, group);
       }
+      if (path === '/api/message/delete' && req.method === 'POST') {
+        await limit('delete:' + user.device, 60, 60);
+        const data = await body();
+        if (typeof data.id !== 'string' || !['me', 'everyone'].includes(data.scope)) fail(400, 'Choose a message and deletion option.');
+        const history = await redis.zrange(key('history:' + user.device), 0, -1);
+        const raw = history.find(value => (typeof value === 'string' ? JSON.parse(value) : value).id === data.id);
+        if (!raw) fail(404, 'Message is no longer available.');
+        const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (item.kind !== 'message') fail(400, 'Only text messages can be deleted here.');
+        if (data.scope === 'everyone' && item.sender !== user.device) fail(403, 'Only the sender can delete for everyone.');
+        const targets = data.scope === 'me' ? [user.device] : (await devices()).map(d => d.device);
+        const transaction = redis.multi();
+        for (const device of targets) transaction.zrem(key('history:' + device), typeof raw === 'string' ? raw : JSON.stringify(raw));
+        await transaction.exec();
+        return reply(200, { ok: true });
+      }
       if (path === '/api/message' && req.method === 'POST') {
         await limit('message:' + user.device, 60, 60);
         const { target, text } = await body();
