@@ -1,6 +1,8 @@
 const $ = s => document.querySelector(s);
 let me, peers = [], target = 'all', items = [], events, uploading = false;
 let groups = [];
+let createAfterJoin = false;
+$('#header-create').onclick = () => { if (me) $('#create-group').click(); else { createAfterJoin = true; $('#name').focus(); toast('Connect this device first. Then we’ll open your new group.'); } };
 const unread = new Map();
 let knownItems = new Set(), historyLoaded = false;
 function conversation(item) { return item.target === 'all' || item.target.startsWith('group-') ? item.target : item.sender === me.device ? item.target : item.sender; }
@@ -60,7 +62,7 @@ $('#create-group').onclick = () => {
     input.type = 'checkbox'; input.value = peer.device;
     label.append(input, document.createTextNode(peer.name + (peer.online ? '' : ' · offline'))); $('#group-members').append(label);
   }
-  $('#group-name').focus();
+  $('#group-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); $('#group-name').focus();
 };
 $('#cancel-group').onclick = () => { $('#group-form').hidden = true; };
 $('#group-form').onsubmit = async e => {
@@ -112,7 +114,7 @@ function enter(user) {
   events.onerror = () => { events?.close(); $('#connection').textContent = 'Reconnecting…'; scheduleReconnect(); };
   events.addEventListener('heartbeat', () => { lastEvent = Date.now(); });
   events.addEventListener('groups', e => { groups = JSON.parse(e.data); renderGroups(); });
-  events.addEventListener('peers', e => { peers = JSON.parse(e.data); renderPeers(); });
+  events.addEventListener('peers', e => { peers = JSON.parse(e.data); renderPeers(); if (createAfterJoin) { createAfterJoin = false; $('#create-group').click(); } });
   events.addEventListener('history', e => {
     items = JSON.parse(e.data);
     if (historyLoaded) items.forEach(receive); else { knownItems = new Set(items.map(i => i.id)); historyLoaded = true; }
