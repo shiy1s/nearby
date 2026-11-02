@@ -54,6 +54,29 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         return session;
       }
       async function devices() { return Object.values(await redis.hgetall(key('devices')) || {}); }
+      async function removeVerificationDevices() {
+        const people = await devices();
+        const testDevices = people.filter(person => /^(verification sender|verification receiver)$/i.test(person.name));
+        if (!testDevices.length) return;
+        const ids = new Set(testDevices.map(person => person.device));
+        const remaining = people.filter(person => !ids.has(person.device));
+        const allGroups = await redis.hgetall(key('groups')) || {};
+        const transaction = redis.multi();
+        for (const person of testDevices) transaction.hdel(key('devices'), person.device);
+        for (const group of Object.values(allGroups)) {
+          const members = group.members.filter(device => !ids.has(device));
+          if (!members.length) transaction.hdel(key('groups'), group.id);
+          else transaction.hset(key('groups'), { [group.id]: { ...group, members } });
+        }
+        for (const person of remaining) {
+          const history = await redis.zrange(key('history:' + person.device), 0, -1);
+          for (const raw of history) {
+            const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (ids.has(item.sender)) transaction.zrem(key('history:' + person.device), raw);
+          }
+        }
+        await transaction.exec();
+      }
       async function recipients(user, target) {
         if (target === 'all') return (await devices()).map(d => d.device);
         if (typeof target !== 'string') fail(400, 'Choose a recipient.');
@@ -125,6 +148,7 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       await limit('api:' + user.device, 240, 60);
       if (path === '/api/me' && req.method === 'GET') return reply(200, user);
       if (path === '/api/state' && req.method === 'GET') {
+        await removeVerificationDevices();
         await redis.set(key('presence:' + user.device), Date.now(), { ex: 40 });
         const [people, allGroups, history] = await Promise.all([devices(), redis.hgetall(key('groups')), redis.zrange(key('history:' + user.device), 0, -1)]);
         const presence = people.length ? await redis.mget(...people.map(p => key('presence:' + p.device))) : [];

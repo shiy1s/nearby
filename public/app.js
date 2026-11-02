@@ -5,6 +5,8 @@ let createAfterJoin = false;
 $('#header-create').onclick = () => { if (me) $('#create-group').click(); else { createAfterJoin = true; $('#name').focus(); toast('Connect this device first. Then we’ll open your new group.'); } };
 const unread = new Map();
 let knownItems = new Set(), historyLoaded = false;
+const testName = name => /^(verification sender|verification receiver)$/i.test(name || '');
+const visiblePeople = () => peers.filter(person => !testName(person.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 function conversation(item) { return item.target === 'all' || item.target.startsWith('group-') ? item.target : item.sender === me.device ? item.target : item.sender; }
 function receive(item) {
   if (knownItems.has(item.id)) return;
@@ -74,9 +76,9 @@ $('#group-form').onsubmit = async e => {
   } catch (err) { toast(err.message); } finally { button.disabled = false; }
 };
 function renderPeers() {
-  $('#count').textContent = peers.length; $('#everyone').classList.toggle('selected', target === 'all'); $('#peers').replaceChildren();
+  $('#count').textContent = visiblePeople().length; $('#everyone').classList.toggle('selected', target === 'all'); $('#peers').replaceChildren();
   $('#everyone').querySelector('small').textContent = unread.has('all') ? `NEW ${unread.get('all')}` : 'Your whole circle';
-  for (const p of peers.filter(p => p.device !== me.device)) {
+  for (const p of visiblePeople().filter(p => p.device !== me.device)) {
     const b = document.createElement('button'); b.className = `peer${target === p.device ? ' selected' : ''}`;
     const icon = document.createElement('span'); icon.className = 'avatar'; icon.textContent = '▱';
     const label = document.createElement('span'); label.textContent = p.name;
@@ -86,8 +88,8 @@ function renderPeers() {
 const size = n => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`;
 function renderFeed(forceBottom = false) {
   const feed = $('#feed'), previousTop = feed.scrollTop;
-  const nearBottom = feed.scrollHeight - feed.clientHeight - previousTop < 70;
-  const visible = items.filter(i => target === 'all' || target.startsWith('group-') ? i.target === target : !i.target.startsWith('group-') && i.target !== 'all' && (i.sender === target || i.target === target));
+  const nearTop = previousTop < 70;
+  const visible = items.filter(i => !testName(i.name) && (target === 'all' || target.startsWith('group-') ? i.target === target : !i.target.startsWith('group-') && i.target !== 'all' && (i.sender === target || i.target === target))).sort((a, b) => b.time - a.time);
   $('#feed').replaceChildren();
   if (!visible.length) { const empty = document.createElement('div'); empty.className = 'empty'; const h = document.createElement('h3'); h.textContent = 'A small space to share.'; const p = document.createElement('p'); p.textContent = 'Send a message or use + to share files.'; empty.append(h,p); $('#feed').append(empty); }
   for (const i of visible) {
@@ -95,7 +97,11 @@ function renderFeed(forceBottom = false) {
     const meta = document.createElement('small'); meta.textContent = `${i.sender === me.device ? 'You' : i.name} · ${new Date(i.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; el.append(meta);
     if (i.kind === 'message') {
       const p = document.createElement('p'); p.textContent = i.text; el.append(p);
-      const actions = document.createElement('div'); actions.className = 'message-actions';
+      const menu = document.createElement('div'); menu.className = 'message-menu';
+      const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'menu-toggle'; toggle.setAttribute('aria-label', 'Message options'); toggle.setAttribute('aria-expanded', 'false'); toggle.textContent = '⋮';
+      const actions = document.createElement('div'); actions.className = 'message-actions'; actions.hidden = true;
+      toggle.onclick = event => { event.stopPropagation(); document.querySelectorAll('.message-actions').forEach(other => { if (other !== actions) other.hidden = true; }); actions.hidden = !actions.hidden; toggle.setAttribute('aria-expanded', String(!actions.hidden)); };
+      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy'; copy.onclick = async () => { try { await navigator.clipboard.writeText(i.text); toast('Message copied.'); actions.hidden = true; } catch { toast('Could not copy this message.'); } }; actions.append(copy);
       for (const scope of i.sender === me.device ? ['me', 'everyone'] : ['me']) {
         const button = document.createElement('button'); button.type = 'button'; button.textContent = scope === 'me' ? 'Delete for me' : 'Delete for everyone';
         button.onclick = async () => {
@@ -106,7 +112,7 @@ function renderFeed(forceBottom = false) {
         };
         actions.append(button);
       }
-      el.append(actions);
+      menu.append(toggle, actions); el.append(menu);
     }
     else {
       const expired = i.expires && i.expires <= Date.now();
@@ -116,8 +122,9 @@ function renderFeed(forceBottom = false) {
     }
     $('#feed').append(el);
   }
-  feed.scrollTop = forceBottom || nearBottom ? feed.scrollHeight : previousTop;
+  feed.scrollTop = forceBottom || nearTop ? 0 : previousTop;
 }
+document.addEventListener('click', () => document.querySelectorAll('.message-actions').forEach(menu => menu.hidden = true));
 function enter(user) {
   clearTimeout(reconnectTimer);
   me = user; $('#join-view').hidden = true; $('#app-view').hidden = false; $('#my-name').textContent = `${me.name} · this device`;

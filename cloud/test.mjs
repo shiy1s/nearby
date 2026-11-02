@@ -11,13 +11,14 @@ class MemoryRedis {
   async hget(k, f) { return structuredClone(this.values.get(k)?.[f] ?? null); }
   async hgetall(k) { return structuredClone(this.values.get(k) ?? null); }
   async hset(k, obj) { this.values.set(k, { ...this.values.get(k), ...structuredClone(obj) }); }
+  async hdel(k, ...fields) { const value = this.values.get(k) || {}; for (const field of fields) delete value[field]; this.values.set(k, value); }
   async mget(...keys) { return Promise.all(keys.map(k => this.get(k))); }
   async eval(script, keys) { const count = (this.values.get(keys[0]) || 0) + 1; this.values.set(keys[0], count); return count; }
   async zadd(k, entry) { const entries = this.values.get(k) || []; const previous = entries.find(e => e.member === entry.member); if (previous) previous.score = entry.score; else entries.push(structuredClone(entry)); entries.sort((a, b) => a.score - b.score); this.values.set(k, entries); }
   async zremrangebyrank(k, from, to) { const entries = this.values.get(k) || []; const end = to < 0 ? entries.length + to : to; if (end >= from) entries.splice(from, end - from + 1); }
   async zrange(k, from, to, options) { const entries = this.values.get(k) || []; return (options?.byScore ? entries.filter(e => e.score >= from && e.score <= to).slice(0, options.count) : entries.slice(from, to === -1 ? undefined : to + 1)).map(e => e.member); }
   async zrem(k, value) { this.values.set(k, (this.values.get(k) || []).filter(e => e.member !== value)); }
-  multi() { const calls = []; const tx = { exec: async () => { for (const [method, args] of calls) await this[method](...args); } }; for (const method of ['hset', 'set', 'del', 'zadd', 'zrem', 'zremrangebyrank']) tx[method] = (...args) => { calls.push([method, args]); return tx; }; return tx; }
+  multi() { const calls = []; const tx = { exec: async () => { for (const [method, args] of calls) await this[method](...args); } }; for (const method of ['hset', 'hdel', 'set', 'del', 'zadd', 'zrem', 'zremrangebyrank']) tx[method] = (...args) => { calls.push([method, args]); return tx; }; return tx; }
 }
 
 test('hosted pairing, offline groups, private uploads, expiry and cold starts', async () => {
@@ -84,6 +85,11 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.equal(stored.has(intent.pathname), false);
   // Rewritten Vercel API requests reach the same endpoint.
   assert.equal((await request('/api/index?route=me', bob)).body.device, bob.device);
+  const verification = await pair('Verification sender');
+  assert.equal((await request('/api/message', verification, { target: alice.device, text: 'Temporary verification' })).statusCode, 200);
+  const cleaned = await request('/api/state', alice);
+  assert(!cleaned.body.peers.some(person => person.name === 'Verification sender'));
+  assert(!cleaned.body.history.some(item => item.name === 'Verification sender'));
   const messageId = state.history[0].id;
   assert.equal((await request('/api/message/delete', outsider, { id: messageId, scope: 'everyone' })).statusCode, 404);
   assert.equal((await request('/api/message/delete', bob, { id: messageId, scope: 'everyone' })).statusCode, 403);
