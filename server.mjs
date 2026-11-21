@@ -165,7 +165,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/upload') {
       if (!allowRate('upload:' + session.device, 20, 3600000)) return send(res, 429, { error: 'Upload rate limit exceeded.' });
       const activeUploads = uploads.get(session.device) || 0;
-      if (activeUploads >= 2) return send(res, 429, { error: 'Only two concurrent uploads are allowed per device.' });
+      if (activeUploads >= 3) return send(res, 429, { error: 'Only three concurrent uploads are allowed per device.' });
       const target = url.searchParams.get('target'), name = (url.searchParams.get('name') || 'file').replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180);
       if (groups.has(target) && !groups.get(target).members.includes(session.device)) return send(res, 403, { error: 'You are not a member of this group.' });
       const size = Number(req.headers['content-length']);
