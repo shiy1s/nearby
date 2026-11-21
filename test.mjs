@@ -8,12 +8,12 @@ import { join as pathJoin } from 'node:path';
 
 test('LAN messaging, presence, file integrity and access controls', async () => {
   const dataDir = await mkdtemp(pathJoin(tmpdir(), 'nearby-test-'));
-  const child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31987', JOIN_CODE: '123456' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31987', JOIN_CODE: 'local-test-pairing-secret-2026' }, stdio: ['ignore', 'pipe', 'pipe'] });
   const base = 'http://127.0.0.1:31987';
   const controllers = [];
   try {
     await Promise.race([once(child.stdout, 'data'), new Promise((_, reject) => setTimeout(() => reject(Error('Startup timeout')), 5000).unref())]);
-    async function join(name) { const r = await fetch(base + '/api/join', { method: 'POST', body: JSON.stringify({ name, code: '123456' }) }); assert.equal(r.status, 200); return { ...await r.json(), cookie: r.headers.get('set-cookie').split(';')[0] }; }
+    async function join(name) { const r = await fetch(base + '/api/join', { method: 'POST', body: JSON.stringify({ name, code: 'local-test-pairing-secret-2026' }) }); assert.equal(r.status, 200); return { ...await r.json(), cookie: r.headers.get('set-cookie').split(';')[0] }; }
     async function request(user, path, data) { return fetch(base + path, { headers: { Cookie: user.cookie }, ...(data ? { method: 'POST', body: JSON.stringify(data) } : {}) }); }
     async function listen(user) {
       const controller = new AbortController(); controllers.push(controller);
@@ -25,7 +25,7 @@ test('LAN messaging, presence, file integrity and access controls', async () => 
     const a = await join('Laptop'), b = await join('Phone'), c = await join('Other laptop');
     const ae = await listen(a), be = await listen(b), ce = await listen(c);
     assert.equal((await fetch(base + '/api/me')).status, 401);
-    assert.equal((await fetch(base + '/api/join', { method: 'POST', body: JSON.stringify({ name: 'Wrong', code: '000000' }) })).status, 401);
+    assert.equal((await fetch(base + '/api/join', { method: 'POST', body: JSON.stringify({ name: 'Wrong', code: 'incorrect-pairing-code' }) })).status, 401);
     assert.equal((await request(a, '/api/message', { target: b.device, text: 'hello phone' })).status, 200);
     const bytes = new Uint8Array([0, 1, 2, 127, 128, 255]);
     const upload = await fetch(base + `/api/upload?target=${b.device}&name=test.bin`, { method: 'POST', headers: { Cookie: a.cookie }, body: bytes });
@@ -78,14 +78,14 @@ test('pairing survives host restart with the same identity and renewed cookie', 
   }
   async function stop() { const exited = once(child, 'exit'); child.kill(); await exited; child = null; }
   try {
-    await start('111111');
-    const r = await fetch('http://127.0.0.1:31988/api/join', { method: 'POST', body: JSON.stringify({ name: 'Remembered phone', code: '111111' }) });
+    await start('local-test-pairing-secret-2026');
+    const r = await fetch('http://127.0.0.1:31988/api/join', { method: 'POST', body: JSON.stringify({ name: 'Remembered phone', code: 'local-test-pairing-secret-2026' }) });
     assert.equal(r.status, 200);
     const user = await r.json(), cookie = r.headers.get('set-cookie').split(';')[0];
     assert.match(r.headers.get('set-cookie'), /Max-Age=34560000/);
     const groupResponse = await fetch('http://127.0.0.1:31988/api/groups', { method: 'POST', headers: { Cookie: cookie }, body: JSON.stringify({ name: 'Permanent group', members: [] }) });
     assert.equal(groupResponse.status, 201); const savedGroup = await groupResponse.json();
-    await stop(); await start('222222');
+    await stop(); await start('different-local-pairing-secret-2026');
     const restoredGroups = await fetch('http://127.0.0.1:31988/api/groups', { headers: { Cookie: cookie } });
     assert.deepEqual(await restoredGroups.json(), [savedGroup]);
     const restored = await fetch('http://127.0.0.1:31988/api/me', { headers: { Cookie: cookie } });
