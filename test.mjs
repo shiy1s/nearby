@@ -8,7 +8,7 @@ import { join as pathJoin } from 'node:path';
 
 test('LAN messaging, presence, file integrity and access controls', async () => {
   const dataDir = await mkdtemp(pathJoin(tmpdir(), 'nearby-test-'));
-  const child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31987', JOIN_CODE: 'local-test-pairing-secret-2026' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31987', HOST: '127.0.0.1', JOIN_CODE: 'local-test-pairing-secret-2026' }, stdio: ['ignore', 'pipe', 'pipe'] });
   const base = 'http://127.0.0.1:31987';
   const controllers = [];
   try {
@@ -73,7 +73,7 @@ test('pairing survives host restart with the same identity and renewed cookie', 
   const dataDir = await mkdtemp(pathJoin(tmpdir(), 'nearby-pairing-test-'));
   let child;
   async function start(code) {
-    child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31988', JOIN_CODE: code }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server.mjs'], { env: { ...process.env, DATA_DIR: dataDir, PORT: '31988', HOST: '127.0.0.1', JOIN_CODE: code }, stdio: ['ignore', 'pipe', 'pipe'] });
     await Promise.race([once(child.stdout, 'data'), new Promise((_, reject) => setTimeout(() => reject(Error('Startup timeout')), 5000).unref())]);
   }
   async function stop() { const exited = once(child, 'exit'); child.kill(); await exited; child = null; }
