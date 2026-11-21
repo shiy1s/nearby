@@ -11,7 +11,7 @@ const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
 const key = suffix => `nearby:v1:${suffix}`;
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
-const cleanName = value => typeof value === 'string' ? value.replace(/[\\x00-\\x1f\\x7f]/g, ' ').trim().slice(0, 60) : '';
+const cleanName = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60) : '';
 
 // Dependencies are injected so authorization and persistence can be tested without cloud credentials.
 export function createHandler({ getRedis, blob, handleUpload, env = process.env }) {
