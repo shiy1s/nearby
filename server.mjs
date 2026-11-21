@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ const code = process.env.JOIN_CODE || randomBytes(16).toString('base64url');
 if (Buffer.byteLength(code, 'utf8') < 20) throw new Error('JOIN_CODE must contain at least 20 bytes.');
 if (process.env.PUBLIC_ORIGIN && process.env.COOKIE_SECURE !== '1') throw new Error('Set COOKIE_SECURE=1 when PUBLIC_ORIGIN is configured.');
 if (process.env.COOKIE_SECURE === '1' && !process.env.PUBLIC_ORIGIN) throw new Error('PUBLIC_ORIGIN is required when COOKIE_SECURE=1.');
+const verifyJoinCode = value => typeof value === 'string' && timingSafeEqual(createHash('sha256').update(value).digest(), createHash('sha256').update(code).digest());
 const storage = await mkdtemp(join(tmpdir(), 'nearby-'));
 const sessions = new Map(), files = new Map(), rateWindows = new Map(), uploads = new Map();
 const dataDir = process.env.DATA_DIR || join(root, '.nearby-data');
@@ -69,8 +70,8 @@ const emit = (s, type, data) => { for (const stream of s.streams) stream.write(`
 const presence = () => { const people = [...sessions.values()].map(({ device, name, streams }) => ({ device, name, online: streams.size > 0 })); for (const s of online()) emit(s, 'peers', people); };
 const send = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
 async function json(req) {
-  let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 16000) throw new Error('Request too large'); }
-  return JSON.parse(body);
+  let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 16000) throw Object.assign(Error('Request too large.'), { status: 413 }); }
+  try { return JSON.parse(body); } catch { throw Object.assign(Error('Invalid JSON.'), { status: 400 }); }
 }
 function deliver(sender, target, item) {
   for (const s of new Set(recipients(sender, target))) { s.history.push(item); s.history = s.history.slice(-100); emit(s, 'item', item); }
@@ -104,7 +105,7 @@ const server = http.createServer(async (req, res) => {
       const address = req.socket.remoteAddress;
       if (!allowRate('join:' + address, 15, 60000)) return send(res, 429, { error: 'Too many attempts. Wait one minute.' });
       const data = await json(req);
-      if (data.code !== code) return send(res, 401, { error: 'That join code is incorrect.' });
+      if (!verifyJoinCode(data.code)) return send(res, 401, { error: 'That join code is incorrect.' });
       if (typeof data.name !== 'string' || !data.name.trim()) return send(res, 400, { error: 'Enter a device name.' });
       if (sessions.size >= 100) return send(res, 429, { error: 'This network has reached its 100-device limit.' });
       const token = id(), device = id();
@@ -194,7 +195,11 @@ const server = http.createServer(async (req, res) => {
       await pipeline(createReadStream(file.path, { highWaterMark: 1024 * 1024 }), res); return;
     }
     send(res, 404, { error: 'Not found' });
-  } catch (err) { if (!res.headersSent && !res.destroyed) send(res, 400, { error: 'Request failed. Please try again.' }); else res.destroy(); }
+  } catch (err) {
+    if (!err.status) console.error('Nearby request failed', { code: err.code || err.name });
+    if (!res.headersSent && !res.destroyed) send(res, err.status || 500, { error: err.status ? err.message : 'The local server could not complete this request. Please retry.' });
+    else res.destroy();
+  }
 });
 const timer = setInterval(async () => {
   for (const s of online()) emit(s, 'heartbeat', { time: Date.now() });
