@@ -13,7 +13,7 @@ const port = Number(process.env.PORT || 3000);
 const code = process.env.JOIN_CODE || randomBytes(16).toString('base64url');
 if (Buffer.byteLength(code, 'utf8') < 20) throw new Error('JOIN_CODE must contain at least 20 bytes.');
 const storage = await mkdtemp(join(tmpdir(), 'nearby-'));
-const sessions = new Map(), files = new Map(), attempts = new Map(), rateWindows = new Map(), uploads = new Map();
+const sessions = new Map(), files = new Map(), rateWindows = new Map(), uploads = new Map();
 const dataDir = process.env.DATA_DIR || join(root, '.nearby-data');
 await mkdir(dataDir, { recursive: true });
 const pairingPath = join(dataDir, 'devices.json');
