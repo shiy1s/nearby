@@ -1,41 +1,64 @@
 # Nearby
 
-**Vercel / any-network mode:** See [VERCEL.md](VERCEL.md) for the hosted build, private cloud storage, and deployment setup. The instructions below describe the original local-network mode.
+Nearby shares messages and files between paired devices. It has two modes:
 
-Messages and file transfers between browsers on the same home Wi-Fi. One laptop hosts the app; phones and other laptops join through its local IP address. No cloud, accounts, installation on the receiving devices, or internet required. Requires Node.js 20 or newer on the host only. No npm dependencies.
+- **Local mode:** one laptop runs the Node.js host. The default listener is loopback-only. To connect phones or other computers, put the host behind a trusted HTTPS reverse proxy; see the Secure local LAN mode section in [VERCEL.md](VERCEL.md).
+- **Hosted mode:** devices connect from any network through Vercel. See [VERCEL.md](VERCEL.md) for setup, Redis, private Blob storage, and deployment.
 
-## Run
+## Local mode
 
-Double-click `start.bat` on Windows, or run 
-ode server.mjs` in this folder. Keep the terminal open. It prints a six-digit join code and local addresses.
+Requires Node.js 24 or newer on the host. No npm dependencies are needed for the local server.
 
-1. On the host, open http://localhost:3000.
-2. On another device connected to the same Wi-Fi, open the **Other devices** address printed in the terminal, such as `http://192.168.1.5:3000`. Type `http://`, not `https://`. If several addresses appear, use the Wi-Fi adapter's IPv4 address from `ipconfig`.
-3. Give each device a name and enter the join code.
-4. Select **Everyone** or one device. Send text or click **+** to share files. The recipient clicks a file to download it.
+### Start
 
-If Windows asks, allow Node.js through the firewall for **Private networks**. If phones cannot connect, check that the Windows Wi-Fi profile is Private and the firewall permits TCP port 3000 on Private networks. Guest Wi-Fi and access-point/client isolation can prevent devices from communicating; use the main home network. VPNs may also interfere. Do not forward this port on your router.
+On Windows, double-click `start.bat`. Or run:
 
-## How it works
+```sh
+node server.mjs
+```
 
-Browsers connect to a Node.js HTTP server on the host. Server-sent events deliver live messages and presence; HTTP uploads/downloads carry files. It uses a central host, not a peer-to-peer mesh. Paired devices remain listed offline; they reconnect when the page is opened again. Active transfers require both devices online and the host running; this does not scan every device on the Wi-Fi. Mobile browsers may disconnect when backgrounded and reconnect when reopened.
+The server prints a random pairing secret if `JOIN_CODE` is not configured. The generated secret is cryptographically random and changes on each restart. To use a stable secret, set `JOIN_CODE` to a random value containing at least 20 bytes.
 
-The join code changes whenever the server restarts. Sessions use HTTP-only cookies. Direct messages and downloads are restricted to their participants. “Everyone” reaches currently connected devices; newcomers do not receive past messages or files. Last 100 events per session are kept in memory. Device pairings are saved in `.nearby-data/devices.json` and do not expire on the host. Keep this folder when moving or updating the app. The browser cookie lasts up to 400 days and renews on use; browsers may clear it sooner. Clearing browser data, private browsing, or changing the host address requires pairing again. Use a fixed local IP (router DHCP reservation) or stable local hostname for consistent access. Use separate browsers/devices for separate identities; tabs in the same browser share an identity.
+By default, the server binds to `127.0.0.1`, so only the host computer can connect. For access from other devices, configure a trusted HTTPS reverse proxy and set:
 
-Files stream to a temporary host folder, with a 1 GB per-file limit and 5 GB total cap. They expire after one hour. Graceful shutdown deletes that folder; a forced crash may leave a 
-earby-*` folder in the OS temporary directory. Messages are lost on restart; paired device identities survive restarts. File delivery means uploaded to the host and offered for download, not automatically saved on the receiving device.
+- `HOST=127.0.0.1`
+- `PUBLIC_ORIGIN=https://your-lan-hostname`
+- `COOKIE_SECURE=1`
 
-Use only on a trusted private LAN: plain HTTP is not encrypted, and this is not end-to-end encryption. The host can access transferred data. Binding to all interfaces makes it reachable on connected networks, so keep the firewall scoped to Private networks. Files are not automatically opened or executed.
+The reverse proxy must terminate HTTPS, and its local CA certificate must be trusted on each client device. Follow the Caddy example in [VERCEL.md](VERCEL.md).
 
-Optional environment variables: `PORT` (default 3000), `JOIN_CODE` (default random six digits).
+Setting `HOST=0.0.0.0` exposes the local HTTP server to the LAN without encryption. This is an explicit insecure opt-in; Nearby prints a warning. Do not use this mode for sensitive conversations or on untrusted networks.
+
+### Use
+
+1. Open the configured HTTPS address on each device (or `http://localhost:3000` on the host).
+2. Enter a device name and the pairing secret.
+3. Select **Everyone**, a paired device, or a group.
+4. Send messages or use **+** to share files. Recipients click a file to download it.
+
+The host must remain running while local devices communicate. Windows Firewall may need to allow the reverse proxy on Private networks. Guest Wi-Fi, access-point isolation, or VPN settings can prevent devices from reaching the host. Do not forward the server port on your router.
+
+### Local behavior and storage
+
+- Browsers connect to the host; server-sent events deliver live messages and presence, while HTTP transfers files.
+- Paired devices remain listed when offline and reconnect when their page is opened again.
+- The host retains the latest 100 events per session in memory. Messages are lost when the host restarts.
+- Pairings and groups are saved under `.nearby-data`. Keep this folder when moving or updating the app.
+- Files are held in a temporary host folder, with a 1 GiB per-file limit and 5 GiB total quota. Files expire after one hour. Graceful shutdown removes the temporary folder; a forced crash may leave a `nearby-*` folder in the OS temporary directory.
+- Use separate browsers or devices for separate identities; tabs in the same browser share an identity.
+
+Optional environment variables: `PORT` (default `3000`), `HOST` (default `127.0.0.1`), `JOIN_CODE` (minimum 20 bytes), `PUBLIC_ORIGIN`, and `COOKIE_SECURE`.
 
 ## Verify
 
-Run 
-ode --test test.mjs` for integration checks with independent simulated device sessions, including live delivery, binary file integrity, and recipient access restrictions.
+Run the integration tests with:
 
+```sh
+node --test test.mjs cloud/test.mjs
+```
 
+The hosted tests use Redis and Blob test doubles. They do not replace testing against a configured Vercel preview deployment.
 
-## Saved groups
-Use **Create group** in the sidebar, enter a name, select paired devices, and choose **Create**. The creator is included automatically. Groups and membership are saved in `.nearby-data/groups.json` and survive restarts. Only members see the group or can send to it. Group messages reach offline members when they reconnect while the same host session is running. Group history is still held in memory and resets on host restart; files still expire after one hour. Keep the entire `.nearby-data` folder to preserve identities and groups.
+## Security model
 
+Use a trusted HTTPS connection for network access. Messages and files are not end-to-end encrypted; the host or hosted deployment operator can access transferred data. Pairing is shared-secret based, so only share the pairing secret with people you intend to include. The local server enforces device, request-rate, and upload-concurrency limits. Hosted mode uses Redis-backed rate limiting and a 100-device cap.
