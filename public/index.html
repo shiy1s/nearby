@@ -1,12 +1,131 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nearby — your local circle</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#075e54">
+  <meta name="description" content="A private space to message and share files between your paired devices.">
+  <title>Nearby — private conversations</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
 <body>
-<header><a class="brand" href="/" aria-label="Nearby home"><span class="logo">n<span>↗</span></span> nearby<span class="tag">LOCAL NETWORK</span></a><span class="network"><i></i><span id="connection">Ready to connect</span></span><button id="header-create" class="primary-action" type="button">＋ Create group</button></header>
-<main>
-<section id="join-view" class="welcome"><div class="welcome-copy"><div class="eyebrow">A LITTLE CLOSER, FROM ANYWHERE</div><h1>Good things<br>are better <em>shared.</em></h1><p>A little meeting place for devices on your Wi-Fi.<br>Send a thought. Share a file. Keep it local.</p><div class="welcome-features"><span>01 &nbsp; Connect your devices</span><span>02 &nbsp; Make a group</span><span>03 &nbsp; Send something good</span></div><div class="connection-art" aria-hidden="true"><span>▱</span><i></i><span>↗</span><i></i><span>▯</span></div></div><form id="join-form" class="join-card"><div class="card-icon" aria-hidden="true">↗</div><div class="eyebrow">YOUR SPACE TO CONNECT</div><h2>Join your circle</h2><p>Name your device and enter your private code.<br>We’ll remember this browser next time.</p><label for="name">Device name</label><input id="name" placeholder="e.g. My laptop" maxlength="40" required autocomplete="nickname"><label for="code">Network join code</label><input id="code" type="password" placeholder="Code shown on the host laptop" required autocomplete="off"><button type="submit">Join the circle <span aria-hidden="true">↗</span></button><small>Pair once. Reconnect automatically on this browser.</small><div class="join-note">Creating a group? Connect first, then choose the devices you want to include.</div></form></section><section id="app-view" hidden><div class="intro"><div><div class="eyebrow">YOUR CONNECTIONS</div><h1>Your people. Your space.</h1><p>Choose a device, then send something its way.</p></div><span id="my-name" class="self"></span></div><div class="workspace"><aside><div class="section-label">PAIRED DEVICES <span id="count">0</span></div><button id="everyone" class="peer selected"><span class="avatar">◎</span><span>Everyone<small>Your whole circle</small></span></button><button id="create-group" class="peer create-group-button">＋ Create group</button><div id="peers"></div><div class="section-label group-heading">SAVED GROUPS</div><div id="groups"></div><form id="group-form" hidden><h3>Create a group</h3><p>A saved space for your favorite devices.</p><label for="group-name">Group name</label><input id="group-name" maxlength="60" required placeholder="e.g. Family"><fieldset id="group-members"><legend>Include devices</legend></fieldset><small>You are included automatically.</small><div class="group-actions"><button type="submit">Create</button><button type="button" id="cancel-group">Cancel</button></div></form><div class="aside-note"><span>↗</span><strong>Make room for another.</strong><p>Open this address on a device on the same Wi-Fi, then enter the host’s join code.</p><code id="address"></code></div></aside><section class="chat"><div class="chat-header"><span class="chat-avatar" aria-hidden="true">◎</span><div class="chat-heading"><h2 id="target-title">Everyone</h2><p id="target-subtitle">Messages and files shared with the circle</p></div><span class="local-badge">● LAN ONLY</span></div><div id="feed" aria-live="polite"><div class="empty"><span>↗</span><h3>A small space to share.</h3><p>Your messages and files will appear here.<br>Invite another device to get started.</p></div></div><div id="transfer-result" role="status" hidden></div><div id="transfer" hidden><span id="transfer-label"></span><progress id="progress" max="100" value="0"></progress></div><form id="send-form" class="composer"><label class="attach" for="file" title="Send files">＋<span class="attach-label">File</span></label><input type="file" id="file" multiple hidden><textarea id="message" rows="1" maxlength="4000" placeholder="Send a message…" aria-label="Message"></textarea><button id="send" aria-label="Send message">↗</button></form><div class="chat-footer">Files up to 1 GB · Available for 1 hour · Keep the host running</div></section></div></section>
-</main><footer><span>Made for the space you share.</span><span>LOCAL FIRST. SIMPLY CONNECTED.</span></footer><div id="toast" role="alert" hidden></div>
-</body></html>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Nearby home">
+      <span class="brand-mark" aria-hidden="true">n</span>
+      <span>nearby</span>
+      <span class="brand-tag">PRIVATE CIRCLE</span>
+    </a>
+    <div class="topbar-right">
+      <span class="connection-state"><i></i><span id="connection">Ready to connect</span></span>
+      <button id="header-create" class="top-action" type="button">＋ <span>New group</span></button>
+    </div>
+  </header>
 
+  <main>
+    <section id="join-view" class="welcome">
+      <div class="welcome-copy">
+        <div class="eyebrow">YOUR DEVICES, IN ONE PLACE</div>
+        <h1>Stay close.<br><em>Share anything.</em></h1>
+        <p>A private space for your people and devices. Send messages, share files, and pick up the conversation wherever you are.</p>
+        <div class="welcome-points">
+          <div><span>✓</span><div><strong>Private circle</strong><small>Only paired devices can join.</small></div></div>
+          <div><span>↗</span><div><strong>Messages & files</strong><small>Share with a person, group, or everyone.</small></div></div>
+          <div><span>⌁</span><div><strong>Pick up anytime</strong><small>Your browser remembers the pairing.</small></div></div>
+        </div>
+      </div>
 
+      <form id="join-form" class="join-card">
+        <div class="join-card-icon" aria-hidden="true">↗</div>
+        <div class="eyebrow">WELCOME TO NEARBY</div>
+        <h2>Join your circle</h2>
+        <p>Choose a name for this device and enter the private pairing code.</p>
+        <label for="name">Device name</label>
+        <input id="name" placeholder="e.g. My laptop" maxlength="40" required autocomplete="nickname">
+        <label for="code">Pairing code</label>
+        <input id="code" type="password" placeholder="Enter your private code" required autocomplete="off">
+        <button type="submit" class="join-submit">Join Nearby <span aria-hidden="true">→</span></button>
+        <small>Pair once. This browser reconnects automatically next time.</small>
+        <div class="join-hint">Your circle is private. Only people with the pairing code can join.</div>
+      </form>
+    </section>
 
+    <section id="app-view" hidden>
+      <div class="app-shell">
+        <aside class="sidebar" aria-label="Conversations">
+          <div class="sidebar-heading">
+            <div>
+              <div class="eyebrow">YOUR PRIVATE CIRCLE</div>
+              <h1>Chats</h1>
+            </div>
+            <button id="create-group" class="icon-button new-group" type="button" aria-label="Create a group" title="Create a group">＋</button>
+          </div>
 
+          <div class="profile-strip">
+            <span class="profile-avatar" id="my-avatar">N</span>
+            <div class="profile-copy"><strong id="my-name">This device</strong><small>Paired device</small></div>
+            <span class="profile-check" aria-hidden="true">✓</span>
+          </div>
+
+          <label class="search-box" for="chat-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="chat-search" type="search" placeholder="Search conversations" autocomplete="off">
+            <kbd>/</kbd>
+          </label>
+
+          <div class="chat-filters" id="chat-filters" aria-label="Filter conversations">
+            <button type="button" class="filter-chip active" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" class="filter-chip" data-filter="unread" aria-pressed="false">Unread</button>
+            <button type="button" class="filter-chip" data-filter="groups" aria-pressed="false">Groups</button>
+          </div>
+
+          <div id="conversation-list" class="conversation-list" aria-label="Chat list"></div>
+
+          <form id="group-form" class="group-form" hidden>
+            <div class="group-form-heading"><div><strong>Create a group</strong><small>Bring your people together</small></div><button type="button" id="cancel-group" class="close-button" aria-label="Close">×</button></div>
+            <label for="group-name">Group name</label>
+            <input id="group-name" maxlength="60" required placeholder="e.g. Family">
+            <fieldset id="group-members"><legend>Add people</legend></fieldset>
+            <small>You’ll be included automatically.</small>
+            <button type="submit" class="create-submit">Create group</button>
+          </form>
+
+          <div class="sidebar-foot">
+            <span class="lock-icon" aria-hidden="true">⌑</span>
+            <span><strong>Your circle stays yours</strong><small>Only paired devices can see these chats.</small></span>
+          </div>
+        </aside>
+
+        <section class="chat-panel" aria-label="Selected conversation">
+          <div class="chat-header">
+            <button id="back-to-chats" class="back-button" type="button" aria-label="Back to chats">‹</button>
+            <span id="chat-avatar" class="chat-avatar" aria-hidden="true">◎</span>
+            <div class="chat-heading">
+              <h2 id="target-title">Everyone</h2>
+              <p id="target-subtitle">Messages shared with your circle</p>
+            </div>
+            <span class="chat-security"><i></i><span id="chat-security-label">PRIVATE CHAT</span></span>
+          </div>
+
+          <div id="feed" class="message-feed" aria-live="polite" aria-relevant="additions text">
+            <div class="empty-state"><span class="empty-icon">✳</span><h3>Your conversations start here</h3><p>Choose someone from your chat list and send your first message.</p></div>
+          </div>
+
+          <div id="transfer-result" class="transfer-result" role="status" hidden></div>
+          <div id="transfer" class="transfer-progress" hidden><span id="transfer-label"></span><progress id="progress" max="100" value="0"></progress></div>
+
+          <form id="send-form" class="composer">
+            <label class="attach-button" for="file" title="Attach files" aria-label="Attach files"><span aria-hidden="true">＋</span></label>
+            <input type="file" id="file" multiple hidden>
+            <textarea id="message" rows="1" maxlength="4000" placeholder="Type a message" aria-label="Type a message"></textarea>
+            <button id="send" class="send-button" type="submit" aria-label="Send message"><span aria-hidden="true">➤</span></button>
+          </form>
+          <div class="chat-footer">Messages are shared with the selected conversation · Files expire automatically</div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
