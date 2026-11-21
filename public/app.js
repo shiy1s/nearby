@@ -1,23 +1,46 @@
-const $ = s => document.querySelector(s);
-let me, peers = [], target = 'all', items = [], events, uploading = false;
-let groups = [];
-let createAfterJoin = false;
-$('#header-create').onclick = () => { if (me) $('#create-group').click(); else { createAfterJoin = true; $('#name').focus(); toast('Connect this device first. Then we’ll open your new group.'); } };
+const $ = selector => document.querySelector(selector);
+let me, peers = [], target = 'all', items = [], events, uploading = false, groups = [];
+let createAfterJoin = false, activeFilter = 'all';
 const unread = new Map();
 let knownItems = new Set(), historyLoaded = false;
-const testName = name => /^(verification sender|verification receiver)$/i.test(name || '');
-const visiblePeople = () => peers.filter(person => !testName(person.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-function conversation(item) { return item.target === 'all' || item.target.startsWith('group-') ? item.target : item.sender === me.device ? item.target : item.sender; }
-function receive(item) {
-  if (knownItems.has(item.id)) return;
-  knownItems.add(item.id);
-  const channel = conversation(item);
-  if (item.sender !== me.device && channel !== target) {
-    unread.set(channel, (unread.get(channel) || 0) + 1);
-    toast(`${item.name} sent ${item.kind === 'file' ? 'a file' : 'a message'}. Open the conversation marked NEW.`);
-  }
-}
 let reconnectTimer, restoring = false, lastEvent = Date.now();
+
+const initials = value => String(value || '?').trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase() || '?';
+const formatTime = time => {
+  if (!time) return '';
+  const date = new Date(time);
+  const today = new Date();
+  return date.toDateString() === today.toDateString()
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+};
+const size = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
+const appShell = () => $('.app-shell');
+
+$('#header-create').onclick = () => {
+  if (me) openGroupForm();
+  else { createAfterJoin = true; $('#name').focus(); toast('Join your circle first. You can create a group right after pairing.'); }
+};
+$('#create-group').onclick = openGroupForm;
+$('#cancel-group').onclick = () => { $('#group-form').hidden = true; };
+
+function toast(message) {
+  $('#toast').textContent = message;
+  $('#toast').hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { $('#toast').hidden = true; }, 5000);
+}
+async function api(path, data) {
+  const response = await fetch(path, data ? {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  } : {});
+  let result = {};
+  try { result = await response.json(); } catch {}
+  if (!response.ok) throw Error(result.error || 'Something went wrong. Please try again.');
+  return result;
+}
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(restoreConnection, 3000);
@@ -30,7 +53,9 @@ async function restoreConnection() {
     if (response.status === 401) {
       events?.close(); events = null; me = null;
       clearTimeout(reconnectTimer);
-      $('#app-view').hidden = true; $('#join-view').hidden = false;
+      appShell()?.classList.remove('chat-open');
+      $('#app-view').hidden = true;
+      $('#join-view').hidden = false;
       $('#connection').textContent = 'Ready to pair';
       return;
     }
@@ -45,153 +70,489 @@ async function restoreConnection() {
     scheduleReconnect();
   } finally { restoring = false; }
 }
-function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 6000); }
-async function api(path, data) { const r = await fetch(path, data ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {}); const result = await r.json(); if (!r.ok) throw Error(result.error); return result; }
-function select(device) { target = device; unread.delete(device); renderPeers(); renderGroups(); renderFeed(true); const group = groups.find(g => g.id === target); $('#target-title').textContent = group?.name || (target === 'all' ? 'Everyone' : peers.find(p => p.device === target)?.name || 'Offline device'); $('#target-subtitle').textContent = group ? `${group.members.length} members · Saved group` : target === 'all' ? 'Messages and files shared with the circle' : 'Only you and this device'; }
-function renderGroups() {
-  $('#groups').replaceChildren();
-  for (const group of groups) {
-    const button = document.createElement('button'); button.className = `peer${target === group.id ? ' selected' : ''}`;
-    button.textContent = `◎ ${group.name}${unread.has(group.id) ? ' · NEW ' + unread.get(group.id) : ''}`; button.onclick = () => select(group.id); $('#groups').append(button);
+
+function conversation(item) {
+  if (item.target === 'all' || item.target.startsWith('group-')) return item.target;
+  return item.sender === me.device ? item.target : item.sender;
+}
+function receive(item) {
+  if (knownItems.has(item.id)) return;
+  knownItems.add(item.id);
+  const channel = conversation(item);
+  if (item.sender !== me.device && channel !== target) {
+    unread.set(channel, (unread.get(channel) || 0) + 1);
+    toast(`${item.name} sent ${item.kind === 'file' ? 'a file' : 'a message'}.`);
   }
 }
-$('#create-group').onclick = () => {
+function itemsFor(channel) {
+  if (channel === 'all' || channel.startsWith('group-')) return items.filter(item => item.target === channel);
+  return items.filter(item =>
+    !item.target.startsWith('group-') && item.target !== 'all' &&
+    ((item.sender === me.device && item.target === channel) ||
+     (item.sender === channel && item.target === me.device))
+  );
+}
+function latestFor(channel) {
+  return itemsFor(channel).reduce((latest, item) => !latest || item.time > latest.time ? item : latest, null);
+}
+function previewFor(item) {
+  if (!item) return 'Start a conversation';
+  const sender = item.sender === me.device ? 'You: ' : '';
+  return item.kind === 'file' ? `${sender}📎 ${item.filename}` : sender + item.text.replace(/\s+/g, ' ');
+}
+function makeAvatar(label, kind = '') {
+  const avatar = document.createElement('span');
+  avatar.className = `conversation-avatar ${kind}`;
+  avatar.textContent = kind === 'everyone' ? '◎' : kind === 'group' ? '♧' : initials(label);
+  if (kind === 'person') {
+    const peer = peers.find(person => person.name === label);
+    if (peer?.online) {
+      const dot = document.createElement('i');
+      dot.className = 'online-dot';
+      dot.setAttribute('aria-label', 'Online');
+      avatar.append(dot);
+    }
+  }
+  return avatar;
+}
+function makeSection(label) {
+  const section = document.createElement('div');
+  section.className = 'conversation-section';
+  section.textContent = label;
+  $('#conversation-list').append(section);
+}
+function makeConversationRow(entry) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = `conversation-row${target === entry.id ? ' selected' : ''}`;
+  row.setAttribute('aria-pressed', String(target === entry.id));
+  row.onclick = () => select(entry.id);
+  row.append(makeAvatar(entry.name, entry.kind));
+
+  const copy = document.createElement('span');
+  copy.className = 'conversation-copy';
+  const top = document.createElement('span');
+  top.className = 'conversation-topline';
+  const name = document.createElement('strong');
+  name.textContent = entry.name;
+  const time = document.createElement('time');
+  time.className = 'conversation-time';
+  time.textContent = entry.last ? formatTime(entry.last.time) : '';
+  top.append(name, time);
+
+  const bottom = document.createElement('span');
+  bottom.className = 'conversation-bottomline';
+  const preview = document.createElement('span');
+  preview.className = 'conversation-preview';
+  preview.textContent = entry.preview;
+  bottom.append(preview);
+  if (entry.unread) {
+    const badge = document.createElement('span');
+    badge.className = 'unread-count';
+    badge.textContent = entry.unread > 99 ? '99+' : String(entry.unread);
+    bottom.append(badge);
+  }
+  copy.append(top, bottom);
+  row.append(copy);
+  $('#conversation-list').append(row);
+}
+function renderConversations() {
+  const list = $('#conversation-list');
+  list.replaceChildren();
+  const people = peers.filter(person => person.device !== me.device);
+  const entries = [
+    { id: 'all', name: 'Everyone', kind: 'everyone', last: latestFor('all'), unread: unread.get('all') || 0 }
+  ];
+  for (const person of people) {
+    const last = latestFor(person.device);
+    entries.push({ id: person.device, name: person.name, kind: 'person', last, unread: unread.get(person.device) || 0, online: person.online });
+  }
+  for (const group of groups) {
+    const last = latestFor(group.id);
+    entries.push({ id: group.id, name: group.name, kind: 'group', last, unread: unread.get(group.id) || 0, members: group.members.length });
+  }
+  for (const entry of entries) entry.preview = previewFor(entry.last);
+
+  const query = $('#chat-search').value.trim().toLocaleLowerCase();
+  let filtered = entries.filter(entry => {
+    if (activeFilter === 'unread' && !entry.unread) return false;
+    if (activeFilter === 'groups' && entry.kind !== 'group') return false;
+    return !query || entry.name.toLocaleLowerCase().includes(query) || entry.preview.toLocaleLowerCase().includes(query);
+  });
+  const pinned = filtered.filter(entry => entry.kind === 'everyone');
+  const direct = filtered.filter(entry => entry.kind === 'person').sort((a, b) => (b.last?.time || 0) - (a.last?.time || 0) || a.name.localeCompare(b.name));
+  const savedGroups = filtered.filter(entry => entry.kind === 'group').sort((a, b) => (b.last?.time || 0) - (a.last?.time || 0) || a.name.localeCompare(b.name));
+  if (pinned.length) {
+    makeSection('Circle');
+    pinned.forEach(makeConversationRow);
+  }
+  if (direct.length) {
+    makeSection('People');
+    direct.forEach(makeConversationRow);
+  }
+  if (savedGroups.length) {
+    makeSection('Groups');
+    savedGroups.forEach(makeConversationRow);
+  }
+  if (!filtered.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-empty';
+    empty.textContent = query ? 'No conversations match your search.' : activeFilter === 'unread' ? 'You’re all caught up.' : 'No conversations here yet.';
+    list.append(empty);
+  }
+}
+function select(device) {
+  target = device;
+  unread.delete(device);
+  const group = groups.find(item => item.id === target);
+  const person = peers.find(item => item.device === target);
+  const title = group?.name || (target === 'all' ? 'Everyone' : person?.name || 'Device');
+  $('#target-title').textContent = title;
+  $('#target-subtitle').textContent = group
+    ? `${group.members.length} members · Group conversation`
+    : target === 'all'
+      ? `${peers.filter(person => person.device !== me.device).length} paired devices in your circle`
+      : person?.online ? 'Online · Direct conversation' : 'Paired device · Currently offline';
+  $('#chat-avatar').textContent = target === 'all' ? '◎' : group ? '♧' : initials(title);
+  $('#chat-security-label').textContent = group ? 'PRIVATE GROUP' : 'PRIVATE CHAT';
+  renderConversations();
+  renderFeed(true);
+  appShell()?.classList.add('chat-open');
+  $('#message').focus({ preventScroll: true });
+}
+
+function openGroupForm() {
   $('#group-form').hidden = false;
   $('#group-members').replaceChildren();
-  const legend = document.createElement('legend'); legend.textContent = 'Include devices'; $('#group-members').append(legend);
-  for (const peer of peers.filter(p => p.device !== me.device)) {
-    const label = document.createElement('label'), input = document.createElement('input');
-    input.type = 'checkbox'; input.value = peer.device;
-    label.append(input, document.createTextNode(peer.name + (peer.online ? '' : ' · offline'))); $('#group-members').append(label);
+  const legend = document.createElement('legend');
+  legend.textContent = 'Add people';
+  $('#group-members').append(legend);
+  const available = peers.filter(person => person.device !== me.device);
+  if (!available.length) {
+    const note = document.createElement('small');
+    note.textContent = 'Pair another device before creating a group.';
+    $('#group-members').append(note);
   }
-  $('#group-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); $('#group-name').focus();
-};
-$('#cancel-group').onclick = () => { $('#group-form').hidden = true; };
-$('#group-form').onsubmit = async e => {
-  e.preventDefault(); const button = e.target.querySelector('[type=submit]'); button.disabled = true;
+  for (const person of available) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = person.device;
+    const name = document.createTextNode(person.name + (person.online ? '' : ' · offline'));
+    label.append(input, name);
+    $('#group-members').append(label);
+  }
+  $('#group-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('#group-name').focus();
+}
+$('#group-form').onsubmit = async event => {
+  event.preventDefault();
+  const button = event.target.querySelector('[type=submit]');
+  button.disabled = true;
   try {
-    const group = await api('/api/groups', { name: $('#group-name').value, members: [...document.querySelectorAll('#group-members input:checked')].map(i => i.value) });
-    if (!groups.some(g => g.id === group.id)) groups.push(group);
-    $('#group-form').reset(); $('#group-form').hidden = true; select(group.id); toast('Group saved. Members can find it in Saved groups.');
-  } catch (err) { toast(err.message); } finally { button.disabled = false; }
+    const group = await api('/api/groups', {
+      name: $('#group-name').value,
+      members: [...document.querySelectorAll('#group-members input:checked')].map(input => input.value)
+    });
+    if (!groups.some(existing => existing.id === group.id)) groups.push(group);
+    $('#group-form').reset();
+    $('#group-form').hidden = true;
+    renderConversations();
+    select(group.id);
+    toast('Group created. Your members can find it in Chats.');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
 };
-function renderPeers() {
-  $('#count').textContent = visiblePeople().length; $('#everyone').classList.toggle('selected', target === 'all'); $('#peers').replaceChildren();
-  $('#everyone').querySelector('small').textContent = unread.has('all') ? `NEW ${unread.get('all')}` : 'Your whole circle';
-  for (const p of visiblePeople().filter(p => p.device !== me.device)) {
-    const b = document.createElement('button'); b.className = `peer${target === p.device ? ' selected' : ''}`;
-    const icon = document.createElement('span'); icon.className = 'avatar'; icon.textContent = '▱';
-    const label = document.createElement('span'); label.textContent = p.name;
-    const sub = document.createElement('small'); sub.textContent = unread.has(p.device) ? `NEW ${unread.get(p.device)}` : p.online ? 'Connected' : 'Paired · offline'; label.append(sub); b.append(icon, label); b.onclick = () => select(p.device); $('#peers').append(b);
-  }
-}
-const size = n => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`;
+$('#chat-search').addEventListener('input', renderConversations);
+$('#chat-filters').addEventListener('click', event => {
+  const button = event.target.closest('[data-filter]');
+  if (!button) return;
+  activeFilter = button.dataset.filter;
+  $('#chat-filters').querySelectorAll('[data-filter]').forEach(chip => {
+    const active = chip === button;
+    chip.classList.toggle('active', active);
+    chip.setAttribute('aria-pressed', String(active));
+  });
+  renderConversations();
+});
+$('#back-to-chats').onclick = () => appShell()?.classList.remove('chat-open');
+
 function renderFeed(forceBottom = false) {
-  const feed = $('#feed'), previousTop = feed.scrollTop;
-  const nearTop = previousTop < 70;
-  const visible = items.filter(i => !testName(i.name) && (target === 'all' || target.startsWith('group-') ? i.target === target : !i.target.startsWith('group-') && i.target !== 'all' && (i.sender === target || i.target === target))).sort((a, b) => b.time - a.time);
-  $('#feed').replaceChildren();
-  if (!visible.length) { const empty = document.createElement('div'); empty.className = 'empty'; const h = document.createElement('h3'); h.textContent = 'A small space to share.'; const p = document.createElement('p'); p.textContent = 'Send a message or use + to share files.'; empty.append(h,p); $('#feed').append(empty); }
-  for (const i of visible) {
-    const el = document.createElement('div'); el.className = `item${i.sender === me.device ? ' mine' : ''}`;
-    const meta = document.createElement('small'); meta.textContent = `${i.sender === me.device ? 'You' : i.name} · ${new Date(i.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; el.append(meta);
-    if (i.kind === 'message') {
-      const p = document.createElement('p'); p.textContent = i.text; el.append(p);
-      const menu = document.createElement('div'); menu.className = 'message-menu';
-      const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'menu-toggle'; toggle.setAttribute('aria-label', 'Message options'); toggle.setAttribute('aria-expanded', 'false'); toggle.textContent = '⋮';
-      const actions = document.createElement('div'); actions.className = 'message-actions'; actions.hidden = true;
-      toggle.onclick = event => { event.stopPropagation(); document.querySelectorAll('.message-actions').forEach(other => { if (other !== actions) other.hidden = true; }); actions.hidden = !actions.hidden; toggle.setAttribute('aria-expanded', String(!actions.hidden)); };
-      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy'; copy.onclick = async () => { try { await navigator.clipboard.writeText(i.text); toast('Message copied.'); actions.hidden = true; } catch { toast('Could not copy this message.'); } }; actions.append(copy);
-      for (const scope of i.sender === me.device ? ['me', 'everyone'] : ['me']) {
-        const button = document.createElement('button'); button.type = 'button'; button.textContent = scope === 'me' ? 'Delete for me' : 'Delete for everyone';
-        button.onclick = async () => {
-          if (!confirm(scope === 'me' ? 'Remove this message from this device’s conversation?' : 'Delete this message for everyone? This cannot be undone.')) return;
-          button.disabled = true;
-          try { await api('/api/message/delete', { id: i.id, scope }); items = items.filter(item => item.id !== i.id); renderFeed(); events?.refresh?.(); toast(scope === 'me' ? 'Message deleted for you.' : 'Message deleted for everyone.'); }
-          catch (error) { toast(error.message); button.disabled = false; }
-        };
-        actions.append(button);
-      }
-      menu.append(toggle, actions); el.append(menu);
-    }
-    else {
-      const expired = i.expires && i.expires <= Date.now();
-      const a = document.createElement(expired ? 'span' : 'a');
-      if (!expired) { a.href = `/api/files/${i.id}`; a.download = i.filename; a.target = '_blank'; a.rel = 'noopener'; }
-      a.textContent = `${expired ? 'Expired · ' : '↓ Download '}${i.filename} · ${size(i.size)}`; el.append(a);
-    }
-    $('#feed').append(el);
+  const feed = $('#feed');
+  const wasNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
+  const visible = itemsFor(target).sort((a, b) => a.time - b.time);
+  feed.replaceChildren();
+  if (!visible.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const icon = document.createElement('span');
+    icon.className = 'empty-icon';
+    icon.textContent = '✳';
+    const heading = document.createElement('h3');
+    heading.textContent = 'Your conversation starts here';
+    const message = document.createElement('p');
+    message.textContent = 'Send a message or attach a file to get things moving.';
+    empty.append(icon, heading, message);
+    feed.append(empty);
   }
-  feed.scrollTop = forceBottom || nearTop ? 0 : previousTop;
+  for (const item of visible) {
+    const bubble = document.createElement('article');
+    bubble.className = `item${item.sender === me.device ? ' mine' : ''}`;
+    const meta = document.createElement('small');
+    meta.textContent = `${item.sender === me.device ? 'You' : item.name} · ${formatTime(item.time)}`;
+    bubble.append(meta);
+    if (item.kind === 'message') {
+      const message = document.createElement('p');
+      message.textContent = item.text;
+      bubble.append(message);
+
+      const menu = document.createElement('div');
+      menu.className = 'message-menu';
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'menu-toggle';
+      toggle.setAttribute('aria-label', 'Message options');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = '⋮';
+      const actions = document.createElement('div');
+      actions.className = 'message-actions';
+      actions.hidden = true;
+      toggle.onclick = click => {
+        click.stopPropagation();
+        document.querySelectorAll('.message-actions').forEach(other => { if (other !== actions) other.hidden = true; });
+        actions.hidden = !actions.hidden;
+        toggle.setAttribute('aria-expanded', String(!actions.hidden));
+      };
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy message';
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(item.text); toast('Message copied.'); actions.hidden = true; }
+        catch { toast('Could not copy this message.'); }
+      };
+      actions.append(copy);
+      for (const scope of item.sender === me.device ? ['me', 'everyone'] : ['me']) {
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.textContent = scope === 'me' ? 'Delete for me' : 'Delete for everyone';
+        action.onclick = async () => {
+          const prompt = scope === 'me' ? 'Remove this message from your conversation?' : 'Delete this message for everyone? This cannot be undone.';
+          if (!confirm(prompt)) return;
+          action.disabled = true;
+          try {
+            await api('/api/message/delete', { id: item.id, scope });
+            items = items.filter(existing => existing.id !== item.id);
+            renderConversations();
+            renderFeed();
+            events?.refresh?.();
+            toast(scope === 'me' ? 'Message deleted for you.' : 'Message deleted for everyone.');
+          } catch (error) { toast(error.message); action.disabled = false; }
+        };
+        actions.append(action);
+      }
+      menu.append(toggle, actions);
+      bubble.append(menu);
+    } else {
+      const expired = item.expires && item.expires <= Date.now();
+      const link = document.createElement(expired ? 'span' : 'a');
+      if (!expired) {
+        link.href = `/api/files/${encodeURIComponent(item.id)}`;
+        link.download = item.filename;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
+      link.textContent = `${expired ? 'Expired · ' : '↓ Download · '}${item.filename} · ${size(item.size)}`;
+      bubble.append(link);
+    }
+    feed.append(bubble);
+  }
+  if (forceBottom || wasNearBottom) feed.scrollTop = feed.scrollHeight;
 }
-document.addEventListener('click', () => document.querySelectorAll('.message-actions').forEach(menu => menu.hidden = true));
+document.addEventListener('click', () => {
+  document.querySelectorAll('.message-actions').forEach(menu => { menu.hidden = true; });
+  document.querySelectorAll('.menu-toggle').forEach(button => button.setAttribute('aria-expanded', 'false'));
+});
+
 function enter(user) {
   clearTimeout(reconnectTimer);
-  me = user; $('#join-view').hidden = true; $('#app-view').hidden = false; $('#my-name').textContent = `${me.name} · this device`;
-  $('#address').textContent = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'Use the Wi-Fi address shown in the host terminal.' : location.origin;
-  events?.close(); events = new (window.NearbyEvents || EventSource)('/api/events');
-  lastEvent = Date.now();
-  events.onopen = () => { lastEvent = Date.now(); $('#connection').textContent = window.NearbyCloud ? 'Live · connected online' : 'Live · connected locally'; };
-  events.onerror = () => { events?.close(); $('#connection').textContent = 'Reconnecting…'; scheduleReconnect(); };
-  events.addEventListener('heartbeat', () => { lastEvent = Date.now(); });
-  events.addEventListener('groups', e => { groups = JSON.parse(e.data); renderGroups(); });
-  events.addEventListener('peers', e => { peers = JSON.parse(e.data); renderPeers(); if (createAfterJoin) { createAfterJoin = false; $('#create-group').click(); } });
-  events.addEventListener('history', e => {
-    items = JSON.parse(e.data);
-    if (historyLoaded) items.forEach(receive); else { knownItems = new Set(items.map(i => i.id)); historyLoaded = true; }
-    renderPeers(); renderGroups(); renderFeed();
+  me = user;
+  historyLoaded = false;
+  knownItems = new Set();
+  unread.clear();
+  $('#join-view').hidden = true;
+  $('#app-view').hidden = false;
+  $('#my-name').textContent = `${me.name} · this device`;
+  $('#my-avatar').textContent = initials(me.name);
+  $('#connection').textContent = 'Connecting…';
+  target = 'all';
+  $('#target-title').textContent = 'Everyone';
+  $('#target-subtitle').textContent = 'Messages shared with your circle';
+  $('#chat-avatar').textContent = '◎';
+  $('#chat-search').value = '';
+  activeFilter = 'all';
+  $('#chat-filters').querySelectorAll('[data-filter]').forEach(chip => {
+    const active = chip.dataset.filter === 'all';
+    chip.classList.toggle('active', active);
+    chip.setAttribute('aria-pressed', String(active));
   });
-  events.addEventListener('item', e => { const item = JSON.parse(e.data); receive(item); if (!items.some(i => i.id === item.id)) items.push(item); items = items.slice(-100); renderPeers(); renderGroups(); renderFeed(); });
+  appShell()?.classList.remove('chat-open');
+  events?.close();
+  events = new (window.NearbyEvents || EventSource)('/api/events');
+  lastEvent = Date.now();
+  events.onopen = () => {
+    lastEvent = Date.now();
+    $('#connection').textContent = window.NearbyCloud ? 'Connected online' : 'Connected locally';
+  };
+  events.onerror = () => {
+    events?.close();
+    $('#connection').textContent = 'Reconnecting…';
+    scheduleReconnect();
+  };
+  events.addEventListener('heartbeat', () => { lastEvent = Date.now(); });
+  events.addEventListener('groups', event => {
+    groups = JSON.parse(event.data);
+    renderConversations();
+    if (createAfterJoin) { createAfterJoin = false; openGroupForm(); }
+  });
+  events.addEventListener('peers', event => {
+    peers = JSON.parse(event.data);
+    renderConversations();
+  });
+  events.addEventListener('history', event => {
+    items = JSON.parse(event.data);
+    if (historyLoaded) items.forEach(receive);
+    else { knownItems = new Set(items.map(item => item.id)); historyLoaded = true; }
+    renderConversations();
+    renderFeed();
+  });
+  events.addEventListener('item', event => {
+    const item = JSON.parse(event.data);
+    receive(item);
+    if (!items.some(existing => existing.id === item.id)) items.push(item);
+    items = items.slice(-100);
+    renderConversations();
+    renderFeed();
+  });
 }
-$('#join-form').onsubmit = async e => { e.preventDefault(); const button = e.target.querySelector('button'); button.disabled = true; try { enter(await api('/api/join', { name: $('#name').value, code: $('#code').value.trim() })); } catch (err) { toast(err.message); } finally { button.disabled = false; } };
-$('#everyone').onclick = () => select('all');
-$('#send-form').onsubmit = async e => { e.preventDefault(); if ($('#send').disabled) return; const text = $('#message').value, destination = target; if (!text.trim()) return; $('#send').disabled = true; try { await api('/api/message', { target: destination, text }); if ($('#message').value === text && target === destination) $('#message').value = ''; events?.refresh?.(); } catch (err) { toast(err.message); } finally { $('#send').disabled = false; } };
-$('#message').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#send-form').requestSubmit(); } };
-$('#file').onchange = async e => {
-  if (uploading) return; const selected = [...e.target.files], destination = target; uploading = true; $('#file').disabled = true;
+$('#join-form').onsubmit = async event => {
+  event.preventDefault();
+  const button = event.target.querySelector('[type=submit]');
+  button.disabled = true;
+  try {
+    enter(await api('/api/join', { name: $('#name').value, code: $('#code').value.trim() }));
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+};
+$('#send-form').onsubmit = async event => {
+  event.preventDefault();
+  if ($('#send').disabled) return;
+  const text = $('#message').value;
+  const destination = target;
+  if (!text.trim()) return;
+  $('#send').disabled = true;
+  try {
+    await api('/api/message', { target: destination, text });
+    if ($('#message').value === text && target === destination) $('#message').value = '';
+    events?.refresh?.();
+  } catch (error) { toast(error.message); }
+  finally { $('#send').disabled = false; $('#message').focus(); }
+};
+$('#message').addEventListener('input', () => {
+  const field = $('#message');
+  field.style.height = 'auto';
+  field.style.height = `${Math.min(field.scrollHeight, 130)}px`;
+});
+$('#message').onkeydown = event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    $('#send-form').requestSubmit();
+  }
+};
+
+$('#file').onchange = async event => {
+  if (uploading) return;
+  const selected = [...event.target.files];
+  const destination = target;
+  uploading = true;
+  $('#file').disabled = true;
+  $('#transfer-result').hidden = true;
   try {
     for (const file of selected) if (file.size > 1024 ** 3) throw Error(`${file.name} exceeds the 1 GB limit.`);
     if (!selected.length) return;
-    const loaded = selected.map(() => 0), total = selected.reduce((sum, f) => sum + f.size, 0), started = performance.now();
-    let next = 0, completed = 0; const failures = [];
+    const loaded = selected.map(() => 0);
+    const total = selected.reduce((sum, file) => sum + file.size, 0);
+    const started = performance.now();
+    let next = 0, completed = 0;
+    const failures = [];
     const update = () => {
-      const sent = loaded.reduce((sum, n) => sum + n, 0);
-      const rate = sent / Math.max((performance.now() - started) / 1000, 0.1);
+      const sent = loaded.reduce((sum, value) => sum + value, 0);
+      const rate = sent / Math.max((performance.now() - started) / 1000, .1);
       $('#progress').value = total ? sent / total * 100 : completed / selected.length * 100;
       $('#transfer-label').textContent = `${completed}/${selected.length} files ready · ${size(sent)} / ${size(total)} · ${(rate / 1048576).toFixed(1)} MB/s${sent === total && completed < selected.length ? ' · Finishing…' : ''}`;
     };
-    $('#transfer').hidden = false; update();
+    $('#transfer').hidden = false;
+    update();
     async function worker() {
       while (next < selected.length) {
-        const index = next++, file = selected[index];
+        const index = next++;
+        const file = selected[index];
         try {
           if (window.NearbyUpload) {
-            await window.NearbyUpload(file, destination, event => { loaded[index] = event.loaded; update(); });
+            await window.NearbyUpload(file, destination, progress => { loaded[index] = progress.loaded; update(); });
           } else {
-          await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', `/api/upload?target=${encodeURIComponent(destination)}&name=${encodeURIComponent(file.name)}`);
-            xhr.upload.onprogress = event => { if (event.lengthComputable) { loaded[index] = event.loaded; update(); } };
-            xhr.onload = () => { if (xhr.status === 200) resolve(); else { let message = 'Upload failed.'; try { message = JSON.parse(xhr.responseText).error || message; } catch {} reject(Error(message)); } };
-            xhr.onerror = () => reject(Error('Connection lost. Please retry this file.'));
-            xhr.onabort = () => reject(Error('Upload cancelled.'));
-            xhr.send(file);
-          });
+            await new Promise((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', `/api/upload?target=${encodeURIComponent(destination)}&name=${encodeURIComponent(file.name)}`);
+              xhr.upload.onprogress = progress => { if (progress.lengthComputable) { loaded[index] = progress.loaded; update(); } };
+              xhr.onload = () => {
+                if (xhr.status === 200) resolve();
+                else {
+                  let message = 'Upload failed.';
+                  try { message = JSON.parse(xhr.responseText).error || message; } catch {}
+                  reject(Error(message));
+                }
+              };
+              xhr.onerror = () => reject(Error('Connection lost. Please retry this file.'));
+              xhr.onabort = () => reject(Error('Upload cancelled.'));
+              xhr.send(file);
+            });
           }
-          loaded[index] = file.size; completed++;
-        } catch (err) { failures.push(`${file.name}: ${err.message}`); }
+          loaded[index] = file.size;
+          completed++;
+        } catch (error) { failures.push(`${file.name}: ${error.message}`); }
         update();
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, selected.length) }, () => worker()));
-    const summary = failures.length ? `${completed}/${selected.length} files shared. Retry failed files: ${failures.join(' ')}` : 'Files shared. Open this conversation on the receiving device and tap Download.';
-    $('#transfer-result').textContent = summary; $('#transfer-result').hidden = false; toast(summary); events?.refresh?.();
-  } catch (err) { toast(err.message); } finally { uploading = false; $('#file').disabled = false; $('#file').value = ''; $('#transfer').hidden = true; }
+    const summary = failures.length
+      ? `${completed}/${selected.length} files shared. Retry failed files: ${failures.join(' ')}`
+      : 'Files shared. Open this conversation on the receiving device to download them.';
+    $('#transfer-result').textContent = summary;
+    $('#transfer-result').hidden = false;
+    toast(summary);
+    events?.refresh?.();
+  } catch (error) { toast(error.message); }
+  finally {
+    uploading = false;
+    $('#file').disabled = false;
+    $('#file').value = '';
+    $('#transfer').hidden = true;
+  }
 };
+
+document.addEventListener('keydown', event => {
+  if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && me) {
+    event.preventDefault();
+    $('#chat-search').focus();
+  }
+});
 window.addEventListener('online', restoreConnection);
 window.addEventListener('offline', () => { $('#connection').textContent = 'Waiting for network…'; });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) restoreConnection(); });
-setInterval(() => { if (me && !document.hidden && Date.now() - lastEvent > 45000) restoreConnection(); }, 10000);
+setInterval(() => {
+  if (me && !document.hidden && Date.now() - lastEvent > 45000) restoreConnection();
+}, 10000);
+window.addEventListener('beforeunload', event => {
+  if (uploading) { event.preventDefault(); event.returnValue = ''; }
+});
 restoreConnection();
-window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
-
