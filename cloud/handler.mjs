@@ -31,9 +31,11 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       const redis = getRedis();
       const url = new URL(req.url, 'https://' + req.headers.host);
       const path = url.searchParams.has('route') ? '/api/' + url.searchParams.get('route') : url.pathname;
-      const configuredOrigin = env.APP_ORIGIN || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : env.VERCEL_URL ? `https://${env.VERCEL_URL}` : `https://${req.headers.host}`);
-      let allowedOrigin;
-      try { allowedOrigin = new URL(configuredOrigin).origin; } catch { fail(503, 'APP_ORIGIN must be a valid absolute origin.'); }
+      if (typeof env.APP_ORIGIN !== 'string' || !env.APP_ORIGIN) fail(503, 'APP_ORIGIN must be configured to the canonical HTTPS origin.');
+      let originUrl;
+      try { originUrl = new URL(env.APP_ORIGIN); } catch { fail(503, 'APP_ORIGIN must be a valid absolute origin.'); }
+      if (originUrl.protocol !== 'https:' || originUrl.pathname !== '/' || originUrl.search || originUrl.hash) fail(503, 'APP_ORIGIN must be an HTTPS origin without a path, query, or fragment.');
+      const allowedOrigin = originUrl.origin;
       if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'Cross-site requests are not allowed.');
       if (req.headers.origin) {
         let requestOrigin;
