@@ -2,6 +2,21 @@
 
 This project has two modes. `node server.mjs` still runs the original LAN app. The Vercel build runs an internet app: devices can be on different Wi-Fi networks or mobile data, and the laptop does not need to stay on. Devices pair once per browser and hostname. Internet access is required.
 
+## Secure local LAN mode
+
+The local Node server speaks HTTP directly. Do not use that direct HTTP address for sensitive conversations on an untrusted network. Put it behind a trusted HTTPS reverse proxy and bind Node to loopback so clients cannot bypass TLS.
+
+Example Caddy site (replace the hostname with one resolvable on your LAN):
+
+```caddy
+nearby.home.arpa {
+  tls internal
+  reverse_proxy 127.0.0.1:3000
+}
+```
+
+Configure the local process with `HOST=127.0.0.1`, `PUBLIC_ORIGIN=https://nearby.home.arpa`, and `COOKIE_SECURE=1`. `PUBLIC_ORIGIN` must be the exact HTTPS origin opened by client devices. Configure Caddy's local CA as trusted on every client device; otherwise browsers will warn or reject the connection. Share only a random pairing secret of at least 20 bytes. When `PUBLIC_ORIGIN` is set, the startup output shows that HTTPS address rather than advertising the backend HTTP port.
+
 ## Deployment setup
 
 1. Put the project source in your Git repository and import it into Vercel. Do not upload `.nearby-data`, `.env` files, or local user files. Exclusions are included in this project.
