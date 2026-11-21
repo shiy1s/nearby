@@ -218,7 +218,7 @@ function select(device) {
   renderConversations();
   renderFeed(true);
   appShell()?.classList.add('chat-open');
-  $('#message').focus({ preventScroll: true });
+  // Keep mobile keyboards closed until the user taps the composer.
 }
 
 function openGroupForm() {
