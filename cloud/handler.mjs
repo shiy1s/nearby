@@ -107,12 +107,13 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         if (!env.CRON_SECRET || !same(req.headers.authorization || '', `Bearer ${env.CRON_SECRET}`)) fail(401, 'Unauthorized.');
         let removed = 0;
         let failed = 0;
-        while (removed + failed < CLEANUP_BUDGET) {
+        const deadline = Date.now() + 20000;
+        while (removed + failed < CLEANUP_BUDGET && Date.now() < deadline) {
           const batch = await redis.zrange(key('expiry'), 0, Date.now(), { byScore: true, offset: 0, count: CLEANUP_BATCH });
           if (!batch.length) break;
           let batchRemoved = 0;
           for (const fileId of batch) {
-            if (removed + failed >= CLEANUP_BUDGET) break;
+            if (removed + failed >= CLEANUP_BUDGET || Date.now() >= deadline) break;
             try {
               const file = await redis.get(key('file:' + fileId));
               if (file?.pathname) await blob.del(file.pathname);
@@ -125,7 +126,7 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
           }
           if (batchRemoved === 0) break;
         }
-        return reply(200, { removed, failed, limit: CLEANUP_BUDGET });
+        return reply(200, { removed, failed, limit: CLEANUP_BUDGET, more: removed + failed >= CLEANUP_BUDGET || Date.now() >= deadline });
       }
       if (path === '/api/join' && req.method === 'POST') {
         const ip = req.headers['x-vercel-forwarded-for'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
