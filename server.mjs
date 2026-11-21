@@ -10,6 +10,8 @@ import { Transform } from 'node:stream';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3000);
+const listenHost = process.env.HOST || '127.0.0.1';
+const secureCookie = process.env.COOKIE_SECURE === '1' || listenHost === '127.0.0.1' || listenHost === '::1';
 const code = process.env.JOIN_CODE || randomBytes(16).toString('base64url');
 if (Buffer.byteLength(code, 'utf8') < 20) throw new Error('JOIN_CODE must contain at least 20 bytes.');
 if (process.env.PUBLIC_ORIGIN && process.env.COOKIE_SECURE !== '1') throw new Error('Set COOKIE_SECURE=1 when PUBLIC_ORIGIN is configured.');
@@ -35,7 +37,7 @@ function savePairings() {
   saveQueue = write;
   return write;
 }
-const remember = (res, token) => res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; ${process.env.COOKIE_SECURE === '1' ? 'Secure; ' : ''}SameSite=Strict; Path=/; Max-Age=34560000`);
+const remember = (res, token) => res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; ${secureCookie ? 'Secure; ' : ''}SameSite=Strict; Path=/; Max-Age=34560000`);
 function allowRate(key, maximum, windowMs) {
   const now = Date.now();
   const recent = (rateWindows.get(key) || []).filter(time => now - time < windowMs);
@@ -215,7 +217,6 @@ const timer = setInterval(async () => {
 server.requestTimeout = 30 * 60 * 1000;
 server.headersTimeout = 60 * 1000;
 server.keepAliveTimeout = 5000;
-const listenHost = process.env.HOST || '127.0.0.1';
 server.listen(port, listenHost, () => {
   console.log(`\nNearby is running. Join code: ${code}\nThis laptop: http://localhost:${port}`);
   if (process.env.PUBLIC_ORIGIN) console.log(`Other devices: ${new URL(process.env.PUBLIC_ORIGIN).origin}`);
