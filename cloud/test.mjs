@@ -13,7 +13,28 @@ class MemoryRedis {
   async hset(k, obj) { this.values.set(k, { ...this.values.get(k), ...structuredClone(obj) }); }
   async hdel(k, ...fields) { const value = this.values.get(k) || {}; for (const field of fields) delete value[field]; this.values.set(k, value); }
   async mget(...keys) { return Promise.all(keys.map(k => this.get(k))); }
-  async eval(script, keys) { const count = (this.values.get(keys[0]) || 0) + 1; this.values.set(keys[0], count); return count; }
+  async eval(script, keys, args = []) {
+    if (script.includes('ZREMRANGEBYSCORE')) {
+      const [cutoff, now, member] = args;
+      const active = (this.values.get(keys[0]) || []).filter(entry => entry.score > Number(cutoff));
+      active.push({ score: Number(now), member });
+      this.values.set(keys[0], active);
+      return active.length;
+    }
+    if (script.includes("redis.call('HLEN'")) {
+      const [device, rawUser, sessionDevice, maximum, ttl] = args;
+      const devices = this.values.get(keys[0]) || {};
+      if (Object.keys(devices).length >= Number(maximum)) return 0;
+      devices[device] = JSON.parse(rawUser);
+      this.values.set(keys[0], devices);
+      this.values.set(keys[1], sessionDevice);
+      this.expirations.set(keys[1], Number(ttl));
+      return 1;
+    }
+    const count = (this.values.get(keys[0]) || 0) + 1;
+    this.values.set(keys[0], count);
+    return count;
+  }
   async zadd(k, entry) { const entries = this.values.get(k) || []; const previous = entries.find(e => e.member === entry.member); if (previous) previous.score = entry.score; else entries.push(structuredClone(entry)); entries.sort((a, b) => a.score - b.score); this.values.set(k, entries); }
   async zremrangebyrank(k, from, to) { const entries = this.values.get(k) || []; const end = to < 0 ? entries.length + to : to; if (end >= from) entries.splice(from, end - from + 1); }
   async zrange(k, from, to, options) { const entries = this.values.get(k) || []; return (options?.byScore ? entries.filter(e => e.score >= from && e.score <= to).slice(0, options.count) : entries.slice(from, to === -1 ? undefined : to + 1)).map(e => e.member); }
@@ -23,7 +44,7 @@ class MemoryRedis {
 
 test('hosted pairing, offline groups, private uploads, expiry and cold starts', async () => {
   const redis = new MemoryRedis(), stored = new Map();
-  const env = { JOIN_CODE: '123456', UPSTASH_REDIS_REST_URL: 'https://example.test', UPSTASH_REDIS_REST_TOKEN: 'test', BLOB_READ_WRITE_TOKEN: 'test', CRON_SECRET: 'cleanup-secret', NODE_ENV: 'production' };
+  const env = { JOIN_CODE: 'test-only-long-pairing-secret-2026', APP_ORIGIN: 'https://nearby.example', UPSTASH_REDIS_REST_URL: 'https://example.test', UPSTASH_REDIS_REST_TOKEN: 'test', BLOB_READ_WRITE_TOKEN: 'test', CRON_SECRET: 'cleanup-secret', NODE_ENV: 'production' };
   const blob = {
     head: async pathname => stored.get(pathname) || Promise.reject(Error('Missing blob')),
     del: async pathname => stored.delete(pathname),
@@ -62,8 +83,11 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.deepEqual((await request('/api/state', outsider)).body.history, []);
   assert.deepEqual((await request('/api/state', outsider)).body.groups, []);
   assert.equal((await request('/api/message', alice, { target: 'all', text: 'forged' }, { origin: 'https://evil.example' })).statusCode, 403);
+  assert.equal((await request('/api/me', alice, undefined, { origin: 'https://nearby.example' })).statusCode, 200);
   assert.equal((await request('/api/upload-intent', outsider, { target: group.id, name: 'secret.bin', size: 20 })).statusCode, 403);
   const intent = (await request('/api/upload-intent', alice, { target: group.id, name: 'secret.bin', size: 20 })).body;
+  const emptyIntent = await request('/api/upload-intent', alice, { target: group.id, name: 'empty.bin', size: 0 });
+  assert.equal(emptyIntent.statusCode, 201);
   const auth = await request('/api/upload', alice, { id: intent.id, pathname: intent.pathname });
   assert.equal(auth.body.maximumSizeInBytes, 20); assert.equal(auth.body.allowOverwrite, false);
   assert.deepEqual(auth.body.allowedContentTypes, ['application/octet-stream']);
@@ -86,10 +110,10 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   // Rewritten Vercel API requests reach the same endpoint.
   assert.equal((await request('/api/index?route=me', bob)).body.device, bob.device);
   const verification = await pair('Verification sender');
-  assert.equal((await request('/api/message', verification, { target: alice.device, text: 'Temporary verification' })).statusCode, 200);
-  const cleaned = await request('/api/state', alice);
-  assert(!cleaned.body.peers.some(person => person.name === 'Verification sender'));
-  assert(!cleaned.body.history.some(item => item.name === 'Verification sender'));
+  assert.equal((await request('/api/message', verification, { target: alice.device, text: 'Legitimate verification-name message' })).statusCode, 200);
+  const afterStateRead = await request('/api/state', alice);
+  assert(afterStateRead.body.peers.some(person => person.device === verification.device && person.name === 'Verification sender'));
+  assert(afterStateRead.body.history.some(item => item.name === 'Verification sender' && item.text === 'Legitimate verification-name message'));
   const messageId = state.history[0].id;
   assert.equal((await request('/api/message/delete', outsider, { id: messageId, scope: 'everyone' })).statusCode, 404);
   assert.equal((await request('/api/message/delete', bob, { id: messageId, scope: 'everyone' })).statusCode, 403);
