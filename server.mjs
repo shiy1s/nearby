@@ -204,9 +204,11 @@ const timer = setInterval(async () => {
 server.requestTimeout = 30 * 60 * 1000;
 server.headersTimeout = 60 * 1000;
 server.keepAliveTimeout = 5000;
-server.listen(port, '0.0.0.0', () => {
+const listenHost = process.env.HOST || '0.0.0.0';
+server.listen(port, listenHost, () => {
   console.log(`\nNearby is running. Join code: ${code}\nThis laptop: http://localhost:${port}`);
-  for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
+  if (process.env.PUBLIC_ORIGIN) console.log(`Other devices: ${new URL(process.env.PUBLIC_ORIGIN).origin}`);
+  else for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
   console.log('Keep this window open. Press Ctrl+C to stop.\n');
 });
 async function stop() { clearInterval(timer); server.closeAllConnections(); server.close(); await rm(storage, { recursive: true, force: true }); process.exit(); }
