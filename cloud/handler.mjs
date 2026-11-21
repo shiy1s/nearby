@@ -1,6 +1,9 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
 const MAX_FILE = 1024 ** 3;
+const MAX_DEVICES = 100;
+const CLEANUP_BATCH = 100;
+const CLEANUP_BUDGET = 1000;
 const LIFE = 24 * 60 * 60 * 1000;
 const SESSION_SECONDS = 34560000;
 const id = () => randomBytes(24).toString('hex');
@@ -8,7 +11,7 @@ const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
 const key = suffix => `nearby:v1:${suffix}`;
 const fail = (status, message) => { throw Object.assign(Error(message), { status }); };
-const cleanName = value => typeof value === 'string' ? value.trim().slice(0, 60) : '';
+const cleanName = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60) : '';
 
 // Dependencies are injected so authorization and persistence can be tested without cloud credentials.
 export function createHandler({ getRedis, blob, handleUpload, env = process.env }) {
@@ -16,16 +19,29 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     const reply = (status, value) => { res.statusCode = status; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
     try {
-      if (!env.JOIN_CODE || env.JOIN_CODE.length < 6 || !(env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL) || !(env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN) || !env.BLOB_READ_WRITE_TOKEN) {
-        return reply(503, { error: 'Hosting setup is incomplete. Configure the database, private Blob store, and a JOIN_CODE of at least 6 characters.' });
+      if (typeof env.JOIN_CODE !== 'string' || Buffer.byteLength(env.JOIN_CODE, 'utf8') < 20 || !(env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL) || !(env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN) || !env.BLOB_READ_WRITE_TOKEN) {
+        return reply(503, { error: 'Hosting setup is incomplete. Configure Redis, a private Blob store, and a JOIN_CODE containing at least 20 bytes.' });
       }
       const redis = getRedis();
       const url = new URL(req.url, 'https://' + req.headers.host);
       const path = url.searchParams.has('route') ? '/api/' + url.searchParams.get('route') : url.pathname;
+      if (typeof env.APP_ORIGIN !== 'string' || !env.APP_ORIGIN) fail(503, 'APP_ORIGIN must be configured to the canonical HTTPS origin.');
+      let originUrl;
+      try { originUrl = new URL(env.APP_ORIGIN); } catch { fail(503, 'APP_ORIGIN must be a valid absolute origin.'); }
+      if (originUrl.protocol !== 'https:' || originUrl.pathname !== '/' || originUrl.search || originUrl.hash) fail(503, 'APP_ORIGIN must be an HTTPS origin without a path, query, or fragment.');
+      const allowedOrigin = originUrl.origin;
       if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'Cross-site requests are not allowed.');
-      if (req.headers.origin && req.headers.origin !== `https://${req.headers.host}` && !(env.NODE_ENV !== 'production' && req.headers.origin === `http://${req.headers.host}`)) fail(403, 'Origin not allowed.');
+      if (req.headers.origin) {
+        let requestOrigin;
+        try { requestOrigin = new URL(req.headers.origin).origin; } catch { fail(403, 'Origin not allowed.'); }
+        if (requestOrigin !== allowedOrigin) fail(403, 'Origin not allowed.');
+      }
       async function body() {
         let value = req.body;
         if (value === undefined) {
@@ -38,9 +54,12 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, 'Expected a JSON object.');
         return value;
       }
-      async function limit(label, maximum, seconds) {
-        const count = await redis.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n", [key('limit:' + label)], [seconds]);
-        if (count > maximum) { res.setHeader('Retry-After', String(seconds)); fail(429, 'Too many requests. Please try again later.'); }
+      async function limit(label, maximum, windowSeconds) {
+        const now = Date.now();
+        const windowMs = windowSeconds * 1000;
+        const script = "redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1]); redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3]); local n=redis.call('ZCARD', KEYS[1]); redis.call('PEXPIRE', KEYS[1], ARGV[4]); return n";
+        const count = Number(await redis.eval(script, [key('limit:' + label)], [now - windowMs, now, `${now}:${id()}`, windowMs * 2]));
+        if (count > maximum) { res.setHeader('Retry-After', String(windowSeconds)); fail(429, 'Too many requests. Please try again later.'); }
       }
       const cookie = (req.headers.cookie || '').split(';').map(v => v.trim()).find(v => v.startsWith('nearby='))?.slice(7);
       let session;
@@ -54,29 +73,6 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         return session;
       }
       async function devices() { return Object.values(await redis.hgetall(key('devices')) || {}); }
-      async function removeVerificationDevices() {
-        const people = await devices();
-        const testDevices = people.filter(person => /^(verification sender|verification receiver)$/i.test(person.name));
-        if (!testDevices.length) return;
-        const ids = new Set(testDevices.map(person => person.device));
-        const remaining = people.filter(person => !ids.has(person.device));
-        const allGroups = await redis.hgetall(key('groups')) || {};
-        const transaction = redis.multi();
-        for (const person of testDevices) transaction.hdel(key('devices'), person.device);
-        for (const group of Object.values(allGroups)) {
-          const members = group.members.filter(device => !ids.has(device));
-          if (!members.length) transaction.hdel(key('groups'), group.id);
-          else transaction.hset(key('groups'), { [group.id]: { ...group, members } });
-        }
-        for (const person of remaining) {
-          const history = await redis.zrange(key('history:' + person.device), 0, -1);
-          for (const raw of history) {
-            const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            if (ids.has(item.sender)) transaction.zrem(key('history:' + person.device), raw);
-          }
-        }
-        await transaction.exec();
-      }
       async function recipients(user, target) {
         if (target === 'all') return (await devices()).map(d => d.device);
         if (typeof target !== 'string') fail(400, 'Choose a recipient.');
@@ -109,13 +105,28 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       }
       if (path === '/api/cleanup' && req.method === 'GET') {
         if (!env.CRON_SECRET || !same(req.headers.authorization || '', `Bearer ${env.CRON_SECRET}`)) fail(401, 'Unauthorized.');
-        const expired = await redis.zrange(key('expiry'), 0, Date.now(), { byScore: true, offset: 0, count: 100 });
-        for (const fileId of expired) {
-          const file = await redis.get(key('file:' + fileId));
-          if (file) await blob.del(file.pathname);
-          await redis.multi().del(key('file:' + fileId)).zrem(key('expiry'), fileId).exec();
+        let removed = 0;
+        let failed = 0;
+        const deadline = Date.now() + 20000;
+        while (removed + failed < CLEANUP_BUDGET && Date.now() < deadline) {
+          const batch = await redis.zrange(key('expiry'), 0, Date.now(), { byScore: true, offset: 0, count: CLEANUP_BATCH });
+          if (!batch.length) break;
+          let batchRemoved = 0;
+          for (const fileId of batch) {
+            if (removed + failed >= CLEANUP_BUDGET || Date.now() >= deadline) break;
+            try {
+              const file = await redis.get(key('file:' + fileId));
+              if (file?.pathname) await blob.del(file.pathname);
+              await redis.multi().del(key('file:' + fileId)).zrem(key('expiry'), fileId).exec();
+              removed++; batchRemoved++;
+            } catch (error) {
+              failed++;
+              console.error('Nearby cleanup item failed', { code: error.code || error.name });
+            }
+          }
+          if (batchRemoved === 0) break;
         }
-        return reply(200, { removed: expired.length });
+        return reply(200, { removed, failed, limit: CLEANUP_BUDGET, more: removed + failed >= CLEANUP_BUDGET || Date.now() >= deadline });
       }
       if (path === '/api/join' && req.method === 'POST') {
         const ip = req.headers['x-vercel-forwarded-for'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
@@ -125,7 +136,8 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         if (typeof data.code !== 'string' || !same(data.code, env.JOIN_CODE)) fail(401, 'That pairing code is incorrect.');
         const name = cleanName(data.name); if (!name) fail(400, 'Enter a device name.');
         const token = id(); const user = { device: id(), name };
-        await redis.multi().hset(key('devices'), { [user.device]: user }).set(key('session:' + hash(token)), user.device, { ex: SESSION_SECONDS }).exec();
+        const registered = await redis.eval("if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) then return 0 end; redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]); redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[5]); return 1", [key('devices'), key('session:' + hash(token))], [user.device, JSON.stringify(user), user.device, MAX_DEVICES, SESSION_SECONDS]);
+        if (Number(registered) !== 1) fail(429, 'This private circle has reached its 100-device limit.');
         res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=34560000`);
         return reply(200, user);
       }
@@ -148,7 +160,6 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       await limit('api:' + user.device, 240, 60);
       if (path === '/api/me' && req.method === 'GET') return reply(200, user);
       if (path === '/api/state' && req.method === 'GET') {
-        await removeVerificationDevices();
         await redis.set(key('presence:' + user.device), Date.now(), { ex: 40 });
         const [people, allGroups, history] = await Promise.all([devices(), redis.hgetall(key('groups')), redis.zrange(key('history:' + user.device), 0, -1)]);
         const presence = people.length ? await redis.mget(...people.map(p => key('presence:' + p.device))) : [];
@@ -189,7 +200,7 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       if (path === '/api/upload-intent' && req.method === 'POST') {
         await limit('upload:' + user.device, 20, 3600);
         const data = await body();
-        if (!Number.isSafeInteger(data.size) || data.size < 1 || data.size > MAX_FILE || typeof data.name !== 'string') fail(400, 'Choose a nonempty file up to 1 GB.');
+        if (!Number.isSafeInteger(data.size) || data.size < 0 || data.size > MAX_FILE || typeof data.name !== 'string') fail(400, 'Choose a file up to 1 GB.');
         const allowed = await recipients(user, data.target);
         const fileId = id(), filename = data.name.replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180) || 'file';
         const file = { id: fileId, pathname: `nearby/${fileId}/${filename}`, filename, size: data.size, sender: user.device, name: user.name, target: data.target, allowed, time: Date.now(), expires: Date.now() + LIFE, complete: false };

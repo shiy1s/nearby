@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,9 +10,15 @@ import { Transform } from 'node:stream';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3000);
-const code = process.env.JOIN_CODE || String(randomInt(100000, 1000000));
+const listenHost = process.env.HOST || '127.0.0.1';
+const secureCookie = process.env.COOKIE_SECURE === '1' || listenHost === '127.0.0.1' || listenHost === '::1';
+const code = process.env.JOIN_CODE || randomBytes(16).toString('base64url');
+if (Buffer.byteLength(code, 'utf8') < 20) throw new Error('JOIN_CODE must contain at least 20 bytes.');
+if (process.env.PUBLIC_ORIGIN && process.env.COOKIE_SECURE !== '1') throw new Error('Set COOKIE_SECURE=1 when PUBLIC_ORIGIN is configured.');
+if (process.env.COOKIE_SECURE === '1' && !process.env.PUBLIC_ORIGIN) throw new Error('PUBLIC_ORIGIN is required when COOKIE_SECURE=1.');
+const verifyJoinCode = value => typeof value === 'string' && timingSafeEqual(createHash('sha256').update(value).digest(), createHash('sha256').update(code).digest());
 const storage = await mkdtemp(join(tmpdir(), 'nearby-'));
-const sessions = new Map(), files = new Map(), attempts = new Map();
+const sessions = new Map(), files = new Map(), rateWindows = new Map(), uploads = new Map();
 const dataDir = process.env.DATA_DIR || join(root, '.nearby-data');
 await mkdir(dataDir, { recursive: true });
 const pairingPath = join(dataDir, 'devices.json');
@@ -31,7 +37,15 @@ function savePairings() {
   saveQueue = write;
   return write;
 }
-const remember = (res, token) => res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=34560000`);
+const remember = (res, token) => res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; ${secureCookie ? 'Secure; ' : ''}SameSite=Strict; Path=/; Max-Age=34560000`);
+function allowRate(key, maximum, windowMs) {
+  const now = Date.now();
+  const recent = (rateWindows.get(key) || []).filter(time => now - time < windowMs);
+  if (recent.length >= maximum) { rateWindows.set(key, recent); return false; }
+  recent.push(now);
+  rateWindows.set(key, recent);
+  return true;
+}
 const groups = new Map();
 const groupPath = join(dataDir, 'groups.json');
 try { for (const group of JSON.parse(await readFile(groupPath, 'utf8'))) groups.set(group.id, group); }
@@ -58,8 +72,8 @@ const emit = (s, type, data) => { for (const stream of s.streams) stream.write(`
 const presence = () => { const people = [...sessions.values()].map(({ device, name, streams }) => ({ device, name, online: streams.size > 0 })); for (const s of online()) emit(s, 'peers', people); };
 const send = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
 async function json(req) {
-  let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 16000) throw new Error('Request too large'); }
-  return JSON.parse(body);
+  let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 16000) throw Object.assign(Error('Request too large.'), { status: 413 }); }
+  try { return JSON.parse(body); } catch { throw Object.assign(Error('Invalid JSON.'), { status: 400 }); }
 }
 function deliver(sender, target, item) {
   for (const s of new Set(recipients(sender, target))) { s.history.push(item); s.history = s.history.slice(-100); emit(s, 'item', item); }
@@ -72,7 +86,18 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   try {
     const url = new URL(req.url, 'http://localhost');
-    if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return send(res, 403, { error: 'Origin not allowed' });
+    if (req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, { error: 'Cross-site requests are not allowed.' });
+    if (req.headers.origin) {
+      let expectedOrigin;
+      try {
+        const configured = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN) : null;
+        if (configured && configured.protocol !== 'https:') return send(res, 503, { error: 'PUBLIC_ORIGIN must use HTTPS.' });
+        expectedOrigin = configured ? configured.origin : `http://${req.headers.host}`;
+      } catch { return send(res, 503, { error: 'PUBLIC_ORIGIN must be a valid absolute origin.' }); }
+      let requestOrigin;
+      try { requestOrigin = new URL(req.headers.origin).origin; } catch { return send(res, 403, { error: 'Origin not allowed.' }); }
+      if (requestOrigin !== expectedOrigin) return send(res, 403, { error: 'Origin not allowed.' });
+    }
     if (req.method === 'GET' && ['/', '/app.js', '/style.css'].includes(url.pathname)) {
       const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
       res.setHeader('Content-Type', name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html');
@@ -80,13 +105,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/join') {
       const address = req.socket.remoteAddress;
-      const attempt = attempts.get(address) || { count: 0, start: Date.now() };
-      if (Date.now() - attempt.start > 60000) { attempt.count = 0; attempt.start = Date.now(); }
-      attempts.set(address, attempt);
-      if (++attempt.count > 15) return send(res, 429, { error: 'Too many attempts. Wait one minute.' });
+      if (!allowRate('join:' + address, 15, 60000)) return send(res, 429, { error: 'Too many attempts. Wait one minute.' });
       const data = await json(req);
-      if (data.code !== code) return send(res, 401, { error: 'That join code is incorrect.' });
+      if (!verifyJoinCode(data.code)) return send(res, 401, { error: 'That join code is incorrect.' });
       if (typeof data.name !== 'string' || !data.name.trim()) return send(res, 400, { error: 'Enter a device name.' });
+      if (sessions.size >= 100) return send(res, 429, { error: 'This network has reached its 100-device limit.' });
       const token = id(), device = id();
       sessions.set(token, { device, name: data.name.trim().slice(0, 40), streams: new Set(), history: [], seen: Date.now() });
       try { await savePairings(); } catch (err) { sessions.delete(token); throw err; }
@@ -97,10 +120,12 @@ const server = http.createServer(async (req, res) => {
     const session = sessions.get(token);
     if (!session) return send(res, 401, { error: 'Join this network first.' });
     session.seen = Date.now();
+    if (!allowRate('api:' + session.device, 240, 60000)) return send(res, 429, { error: 'Too many requests. Please slow down.' });
     remember(res, token);
     if (req.method === 'GET' && url.pathname === '/api/me') return send(res, 200, { device: session.device, name: session.name });
     if (req.method === 'GET' && url.pathname === '/api/groups') return send(res, 200, myGroups(session));
     if (req.method === 'POST' && url.pathname === '/api/groups') {
+      if (!allowRate('groups:' + session.device, 10, 3600000)) return send(res, 429, { error: 'Group creation limit reached.' });
       const { name, members } = await json(req);
       const known = new Set([...sessions.values()].map(s => s.device));
       if (typeof name !== 'string' || !name.trim() || name.trim().length > 60 || !Array.isArray(members) || members.length > 100 || members.some(m => !known.has(m))) return send(res, 400, { error: 'Enter a group name and select paired devices.' });
@@ -118,6 +143,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/message/delete') {
+      if (!allowRate('delete:' + session.device, 60, 60000)) return send(res, 429, { error: 'Message deletion limit reached.' });
       const data = await json(req);
       if (!data || typeof data.id !== 'string' || !['me', 'everyone'].includes(data.scope)) return send(res, 400, { error: 'Choose a message and deletion option.' });
       const item = session.history.find(i => i.id === data.id);
@@ -131,6 +157,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/message') {
+      if (!allowRate('message:' + session.device, 60, 60000)) return send(res, 429, { error: 'Message rate limit exceeded.' });
       const { target, text } = await json(req);
       if (groups.has(target) && !groups.get(target).members.includes(session.device)) return send(res, 403, { error: 'You are not a member of this group.' });
       if (typeof text !== 'string' || !text.trim() || text.length > 4000) return send(res, 400, { error: 'Use a message between 1 and 4,000 characters.' });
@@ -139,6 +166,9 @@ const server = http.createServer(async (req, res) => {
       deliver(session, target, item); return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/upload') {
+      if (!allowRate('upload:' + session.device, 20, 3600000)) return send(res, 429, { error: 'Upload rate limit exceeded.' });
+      const activeUploads = uploads.get(session.device) || 0;
+      if (activeUploads >= 3) return send(res, 429, { error: 'Only three concurrent uploads are allowed per device.' });
       const target = url.searchParams.get('target'), name = (url.searchParams.get('name') || 'file').replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180);
       if (groups.has(target) && !groups.get(target).members.includes(session.device)) return send(res, 403, { error: 'You are not a member of this group.' });
       const size = Number(req.headers['content-length']);
@@ -148,11 +178,13 @@ const server = http.createServer(async (req, res) => {
       const fileId = id(), path = join(storage, fileId);
       const allowed = new Set(recipients(session, target).map(s => s.device));
       reserved += size;
+      uploads.set(session.device, activeUploads + 1);
       try {
         let received = 0;
         await pipeline(req, new Transform({ highWaterMark: 1024 * 1024, transform(chunk, enc, cb) { received += chunk.length; cb(received > size ? new Error('Upload exceeds declared size') : null, chunk); } }), createWriteStream(path, { flags: 'wx', highWaterMark: 1024 * 1024 }));
         if ((await stat(path)).size !== size) throw new Error('Incomplete upload');
-      } catch (err) { reserved -= size; await rm(path, { force: true }); throw err; }
+      } catch (err) { reserved -= size; uploads.set(session.device, Math.max(0, (uploads.get(session.device) || 1) - 1)); await rm(path, { force: true }); throw err; }
+      uploads.set(session.device, Math.max(0, (uploads.get(session.device) || 1) - 1));
       files.set(fileId, { path, name, size, allowed, expires: Date.now() + 3600000 });
       deliver(session, target, { id: fileId, kind: 'file', sender: session.device, name: session.name, target, filename: name, size, time: Date.now() });
       return send(res, 200, { ok: true });
@@ -165,17 +197,33 @@ const server = http.createServer(async (req, res) => {
       await pipeline(createReadStream(file.path, { highWaterMark: 1024 * 1024 }), res); return;
     }
     send(res, 404, { error: 'Not found' });
-  } catch (err) { if (!res.headersSent && !res.destroyed) send(res, 400, { error: 'Request failed. Please try again.' }); else res.destroy(); }
+  } catch (err) {
+    if (!err.status) console.error('Nearby request failed', { code: err.code || err.name });
+    if (!res.headersSent && !res.destroyed) send(res, err.status || 500, { error: err.status ? err.message : 'The local server could not complete this request. Please retry.' });
+    else res.destroy();
+  }
 });
 const timer = setInterval(async () => {
   for (const s of online()) emit(s, 'heartbeat', { time: Date.now() });
-  for (const [key, file] of files) if (file.expires < Date.now()) { files.delete(key); reserved -= file.size; await rm(file.path, { force: true }).catch(() => {}); }
-  for (const [key, a] of attempts) if (Date.now() - a.start > 60000) attempts.delete(key);
+  for (const [key, file] of files) if (file.expires < Date.now()) {
+    try { await rm(file.path, { force: true }); files.delete(key); reserved = Math.max(0, reserved - file.size); }
+    catch (err) { console.error('Nearby expired-file cleanup failed', { code: err.code || err.name }); }
+  }
+  for (const [key, timestamps] of rateWindows) {
+    const recent = timestamps.filter(time => Date.now() - time < 3600000);
+    if (recent.length) rateWindows.set(key, recent); else rateWindows.delete(key);
+  }
 }, 20000);
-server.requestTimeout = 0;
-server.listen(port, '0.0.0.0', () => {
+server.requestTimeout = 30 * 60 * 1000;
+server.headersTimeout = 60 * 1000;
+server.keepAliveTimeout = 5000;
+server.listen(port, listenHost, () => {
   console.log(`\nNearby is running. Join code: ${code}\nThis laptop: http://localhost:${port}`);
-  for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
+  if (process.env.PUBLIC_ORIGIN) console.log(`Other devices: ${new URL(process.env.PUBLIC_ORIGIN).origin}`);
+  else if (listenHost === '0.0.0.0' || listenHost === '::') {
+    console.warn('WARNING: LAN HTTP is unencrypted. Do not use it for sensitive conversations on untrusted networks.');
+    for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
+  } else console.log('Local-only listener. Configure a trusted HTTPS reverse proxy for access from other devices.');
   console.log('Keep this window open. Press Ctrl+C to stop.\n');
 });
 async function stop() { clearInterval(timer); server.closeAllConnections(); server.close(); await rm(storage, { recursive: true, force: true }); process.exit(); }
