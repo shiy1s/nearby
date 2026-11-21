@@ -135,6 +135,42 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   }
 });
 
+test('cloud pairing enforces the device cap atomically', async () => {
+  const redis = new MemoryRedis();
+  const existing = Object.fromEntries(Array.from({ length: 100 }, (_, index) => {
+    const device = 'device-' + index;
+    return [device, { device, name: 'Existing device ' + index }];
+  }));
+  redis.values.set('nearby:v1:devices', existing);
+  const env = {
+    JOIN_CODE: 'test-only-long-pairing-secret-2026',
+    APP_ORIGIN: 'https://nearby.example',
+    UPSTASH_REDIS_REST_URL: 'https://example.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test',
+    BLOB_READ_WRITE_TOKEN: 'test',
+    NODE_ENV: 'production',
+  };
+  const handler = createHandler({
+    env,
+    getRedis: () => redis,
+    blob: {},
+    handleUpload: async () => ({}),
+  });
+  const res = {
+    headers: {},
+    setHeader(name, value) { this.headers[name.toLowerCase()] = value; },
+    end(value) { this.body = value ? JSON.parse(value) : null; },
+  };
+  await handler({
+    url: '/api/join',
+    method: 'POST',
+    headers: { host: 'nearby.example', 'x-vercel-forwarded-for': 'device-cap-test' },
+    body: { name: 'Overflow device', code: env.JOIN_CODE },
+  }, res);
+  assert.equal(res.statusCode, 429);
+  assert.equal(Object.keys(redis.values.get('nearby:v1:devices')).length, 100);
+});
+
 test('hosted build fails closed when secrets are missing', async () => {
   const handler = createHandler({ env: {}, getRedis() { throw Error('Must not connect'); } });
   const res = { setHeader() {}, end(text) { this.body = JSON.parse(text); } };
