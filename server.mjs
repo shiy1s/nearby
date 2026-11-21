@@ -12,6 +12,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3000);
 const code = process.env.JOIN_CODE || randomBytes(16).toString('base64url');
 if (Buffer.byteLength(code, 'utf8') < 20) throw new Error('JOIN_CODE must contain at least 20 bytes.');
+if (process.env.PUBLIC_ORIGIN && process.env.COOKIE_SECURE !== '1') throw new Error('Set COOKIE_SECURE=1 when PUBLIC_ORIGIN is configured.');
+if (process.env.COOKIE_SECURE === '1' && !process.env.PUBLIC_ORIGIN) throw new Error('PUBLIC_ORIGIN is required when COOKIE_SECURE=1.');
 const storage = await mkdtemp(join(tmpdir(), 'nearby-'));
 const sessions = new Map(), files = new Map(), rateWindows = new Map(), uploads = new Map();
 const dataDir = process.env.DATA_DIR || join(root, '.nearby-data');
@@ -208,11 +210,14 @@ const timer = setInterval(async () => {
 server.requestTimeout = 30 * 60 * 1000;
 server.headersTimeout = 60 * 1000;
 server.keepAliveTimeout = 5000;
-const listenHost = process.env.HOST || '0.0.0.0';
+const listenHost = process.env.HOST || '127.0.0.1';
 server.listen(port, listenHost, () => {
   console.log(`\nNearby is running. Join code: ${code}\nThis laptop: http://localhost:${port}`);
   if (process.env.PUBLIC_ORIGIN) console.log(`Other devices: ${new URL(process.env.PUBLIC_ORIGIN).origin}`);
-  else for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
+  else if (listenHost === '0.0.0.0' || listenHost === '::') {
+    console.warn('WARNING: LAN HTTP is unencrypted. Do not use it for sensitive conversations on untrusted networks.');
+    for (const addresses of Object.values(networkInterfaces())) for (const a of addresses || []) if (a.family === 'IPv4' && !a.internal) console.log(`Other devices: http://${a.address}:${port}`);
+  } else console.log('Local-only listener. Configure a trusted HTTPS reverse proxy for access from other devices.');
   console.log('Keep this window open. Press Ctrl+C to stop.\n');
 });
 async function stop() { clearInterval(timer); server.closeAllConnections(); server.close(); await rm(storage, { recursive: true, force: true }); process.exit(); }
