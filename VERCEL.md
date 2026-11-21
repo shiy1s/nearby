@@ -4,7 +4,7 @@ This project has two modes. `node server.mjs` still runs the original LAN app. T
 
 ## Secure local LAN mode
 
-The local Node server speaks HTTP directly. Do not use that direct HTTP address for sensitive conversations on an untrusted network. Put it behind a trusted HTTPS reverse proxy and bind Node to loopback so clients cannot bypass TLS.
+The local Node server speaks HTTP internally and now binds to `127.0.0.1` by default, so it is local-only until configured. For access from other devices, put it behind a trusted HTTPS reverse proxy and keep Node bound to loopback so clients cannot bypass TLS.
 
 Example Caddy site (replace the hostname with one resolvable on your LAN):
 
@@ -15,7 +15,7 @@ nearby.home.arpa {
 }
 ```
 
-Configure the local process with `HOST=127.0.0.1`, `PUBLIC_ORIGIN=https://nearby.home.arpa`, and `COOKIE_SECURE=1`. `PUBLIC_ORIGIN` must be the exact HTTPS origin opened by client devices. Configure Caddy's local CA as trusted on every client device; otherwise browsers will warn or reject the connection. Share only a random pairing secret of at least 20 bytes. When `PUBLIC_ORIGIN` is set, the startup output shows that HTTPS address rather than advertising the backend HTTP port.
+Configure the local process with `HOST=127.0.0.1`, `PUBLIC_ORIGIN=https://nearby.home.arpa`, and `COOKIE_SECURE=1`. The server refuses an HTTP `PUBLIC_ORIGIN` or a secure-cookie configuration without a public HTTPS origin. `PUBLIC_ORIGIN` must be the exact HTTPS origin opened by client devices. Configure Caddy's local CA as trusted on every client device; otherwise browsers will warn or reject the connection. Share only a random pairing secret of at least 20 bytes. When `PUBLIC_ORIGIN` is set, the startup output shows that HTTPS address rather than advertising the backend HTTP port. Binding to `0.0.0.0` without a proxy is an explicit insecure opt-in; the server prints a warning and traffic remains unencrypted.
 
 ## Deployment setup
 
