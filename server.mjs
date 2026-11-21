@@ -84,7 +84,11 @@ const server = http.createServer(async (req, res) => {
     if (req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, { error: 'Cross-site requests are not allowed.' });
     if (req.headers.origin) {
       let expectedOrigin;
-      try { expectedOrigin = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : `http://${req.headers.host}`; } catch { return send(res, 503, { error: 'PUBLIC_ORIGIN must be a valid absolute origin.' }); }
+      try {
+        const configured = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN) : null;
+        if (configured && configured.protocol !== 'https:') return send(res, 503, { error: 'PUBLIC_ORIGIN must use HTTPS.' });
+        expectedOrigin = configured ? configured.origin : `http://${req.headers.host}`;
+      } catch { return send(res, 503, { error: 'PUBLIC_ORIGIN must be a valid absolute origin.' }); }
       let requestOrigin;
       try { requestOrigin = new URL(req.headers.origin).origin; } catch { return send(res, 403, { error: 'Origin not allowed.' }); }
       if (requestOrigin !== expectedOrigin) return send(res, 403, { error: 'Origin not allowed.' });
