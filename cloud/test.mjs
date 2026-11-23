@@ -65,6 +65,7 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   }
   async function pair(name) { const r = await request('/api/join', null, { name, code: env.JOIN_CODE }); assert.equal(r.statusCode, 200); assert.match(r.headers['set-cookie'], /Secure/); return { ...r.body, cookie: r.headers['set-cookie'].split(';')[0] }; }
   const alice = await pair('Laptop'), bob = await pair('Phone'), outsider = await pair('Other');
+  env.ADMIN_DEVICE_ID = alice.device;
   assert.equal((await request('/api/me')).statusCode, 401);
   assert.equal((await request('/api/message', alice, null)).statusCode, 400);
   assert.equal((await request('/api/message', alice, '{broken')).statusCode, 400);
@@ -78,6 +79,8 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.equal((await request('/api/message', alice, { target: group.id, text: 'Delivered while offline' })).statusCode, 200);
   handler = createHandler(dependencies);
   assert.equal((await request('/api/me', alice)).body.device, alice.device);
+  assert.equal((await request('/api/me', alice)).body.isAdmin, true);
+  assert.equal((await request('/api/me', bob)).body.isAdmin, false);
   const state = (await request('/api/state', bob)).body;
   assert.equal(state.groups[0].id, group.id); assert.equal(state.history[0].text, 'Delivered while offline');
   assert.deepEqual((await request('/api/state', outsider)).body.history, []);
@@ -128,6 +131,13 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   handler = createHandler(dependencies);
   assert(!(await request('/api/state', alice)).body.history.some(i => i.id === messageId));
   assert.equal((await request('/api/message/delete', alice, { id: messageId, scope: 'bad' })).statusCode, 400);
+  assert.equal((await request('/api/devices/delete', outsider, { device: verification.device })).statusCode, 403);
+  assert.equal((await request('/api/devices/delete', alice, { device: alice.device })).statusCode, 400);
+  assert.equal((await request('/api/devices/delete', alice, { device: 'not-a-device' })).statusCode, 400);
+  assert.equal((await request('/api/devices/delete', alice, { device: verification.device })).statusCode, 200);
+  assert(!(await request('/api/state', alice)).body.peers.some(person => person.device === verification.device));
+  assert.equal((await request('/api/me', verification)).statusCode, 401);
+
   for (let n = 0; n < 10; n++) assert.equal((await request('/api/join', null, { name: 'Guess', code: 'wrong' }, { 'x-vercel-forwarded-for': 'test-attacker' })).statusCode, 401);
   const blocked = await request('/api/join', null, { name: 'Guess', code: env.JOIN_CODE }, { 'x-vercel-forwarded-for': 'test-attacker' });
   assert.equal(blocked.statusCode, 429); assert.equal(blocked.headers['retry-after'], '60');
