@@ -122,12 +122,15 @@ function makeSection(label) {
   $('#conversation-list').append(section);
 }
 function makeConversationRow(entry) {
-  const row = document.createElement('button');
-  row.type = 'button';
+  const row = document.createElement('div');
   row.className = `conversation-row${target === entry.id ? ' selected' : ''}`;
-  row.setAttribute('aria-pressed', String(target === entry.id));
-  row.onclick = () => select(entry.id);
-  row.append(makeAvatar(entry.name, entry.kind));
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'conversation-open';
+  open.setAttribute('aria-pressed', String(target === entry.id));
+  open.setAttribute('aria-label', `Open ${entry.name}`);
+  open.onclick = () => select(entry.id);
+  open.append(makeAvatar(entry.name, entry.kind));
 
   const copy = document.createElement('span');
   copy.className = 'conversation-copy';
@@ -153,7 +156,59 @@ function makeConversationRow(entry) {
     bottom.append(badge);
   }
   copy.append(top, bottom);
-  row.append(copy);
+  open.append(copy);
+  row.append(open);
+  if (entry.kind === 'person') {
+    const actions = document.createElement('div');
+    actions.className = 'device-actions';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'device-menu-toggle';
+    toggle.textContent = '⋮';
+    toggle.setAttribute('aria-label', `More options for ${entry.name}`);
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.onclick = event => {
+      event.stopPropagation();
+      const menu = actions.querySelector('.device-menu');
+      const opening = menu.hidden;
+      document.querySelectorAll('.device-menu').forEach(item => { item.hidden = true; });
+      document.querySelectorAll('.device-menu-toggle').forEach(item => item.setAttribute('aria-expanded', 'false'));
+      menu.hidden = !opening;
+      toggle.setAttribute('aria-expanded', String(opening));
+    };
+    const menu = document.createElement('div');
+    menu.className = 'device-menu';
+    menu.hidden = true;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'device-delete';
+    remove.textContent = me?.isAdmin ? 'Delete device' : 'Delete device · Admin only';
+    remove.disabled = !me?.isAdmin;
+    remove.title = me?.isAdmin ? 'Remove this paired device' : 'Only the administrator can remove devices';
+    remove.onclick = async event => {
+      event.stopPropagation();
+      menu.hidden = true;
+      toggle.setAttribute('aria-expanded', 'false');
+      if (!me?.isAdmin) return;
+      if (!confirm(`Remove “${entry.name}” from your Nearby circle? Their pairing will stop working and their direct-chat history will be removed.`)) return;
+      remove.disabled = true;
+      try {
+        await api('/api/devices/delete', { device: entry.id });
+        peers = peers.filter(person => person.device !== entry.id);
+        unread.delete(entry.id);
+        if (target === entry.id) select('all');
+        renderConversations();
+        events?.refresh?.();
+        toast(`${entry.name} was removed from your circle.`);
+      } catch (error) {
+        toast(error.message);
+        remove.disabled = false;
+      }
+    };
+    menu.append(remove);
+    actions.append(toggle, menu);
+    row.append(actions);
+  }
   $('#conversation-list').append(row);
 }
 function renderConversations() {
@@ -369,6 +424,8 @@ function renderFeed(forceBottom = false) {
   if (forceBottom || wasNearBottom) feed.scrollTop = feed.scrollHeight;
 }
 document.addEventListener('click', () => {
+  document.querySelectorAll('.device-menu').forEach(menu => { menu.hidden = true; });
+  document.querySelectorAll('.device-menu-toggle').forEach(button => button.setAttribute('aria-expanded', 'false'));
   document.querySelectorAll('.message-actions').forEach(menu => { menu.hidden = true; });
   document.querySelectorAll('.menu-toggle').forEach(button => button.setAttribute('aria-expanded', 'false'));
 });
