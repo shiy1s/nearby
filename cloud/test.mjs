@@ -84,6 +84,10 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.deepEqual((await request('/api/state', outsider)).body.groups, []);
   assert.equal((await request('/api/message', alice, { target: 'all', text: 'forged' }, { origin: 'https://evil.example' })).statusCode, 403);
   assert.equal((await request('/api/me', alice, undefined, { origin: 'https://nearby.example' })).statusCode, 200);
+  // The same deployment may be opened through a Vercel deployment URL or
+  // another attached domain; same-origin API calls on that host must work.
+  assert.equal((await request('/api/me', alice, undefined, { host: 'nearby-preview.vercel.app', origin: 'https://nearby-preview.vercel.app' })).statusCode, 200);
+  assert.equal((await request('/api/me', alice, undefined, { host: 'nearby-preview.vercel.app', origin: 'https://evil.example' })).statusCode, 403);
   assert.equal((await request('/api/upload-intent', outsider, { target: group.id, name: 'secret.bin', size: 20 })).statusCode, 403);
   const intent = (await request('/api/upload-intent', alice, { target: group.id, name: 'secret.bin', size: 20 })).body;
   const emptyIntent = await request('/api/upload-intent', alice, { target: group.id, name: 'empty.bin', size: 0 });

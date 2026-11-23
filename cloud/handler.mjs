@@ -36,11 +36,24 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       try { originUrl = new URL(env.APP_ORIGIN); } catch { fail(503, 'APP_ORIGIN must be a valid absolute origin.'); }
       if (originUrl.protocol !== 'https:' || originUrl.pathname !== '/' || originUrl.search || originUrl.hash) fail(503, 'APP_ORIGIN must be an HTTPS origin without a path, query, or fragment.');
       const allowedOrigin = originUrl.origin;
+      // Vercel can serve the same deployment through its canonical domain, a
+      // deployment URL, or a custom domain. APP_ORIGIN remains the canonical
+      // production origin, while same-origin requests to the actual HTTPS host
+      // are also valid. Cross-site requests remain rejected below.
+      let deploymentOrigin;
+      try {
+        if (typeof req.headers.host !== 'string' || !req.headers.host || req.headers.host.includes(',')) {
+          fail(403, 'Request host is invalid.');
+        }
+        deploymentOrigin = new URL('https://' + req.headers.host).origin;
+      } catch {
+        fail(403, 'Request host is invalid.');
+      }
       if (req.headers['sec-fetch-site'] === 'cross-site') fail(403, 'Cross-site requests are not allowed.');
       if (req.headers.origin) {
         let requestOrigin;
         try { requestOrigin = new URL(req.headers.origin).origin; } catch { fail(403, 'Origin not allowed.'); }
-        if (requestOrigin !== allowedOrigin) fail(403, 'Origin not allowed.');
+        if (requestOrigin !== allowedOrigin && requestOrigin !== deploymentOrigin) fail(403, 'Origin not allowed.');
       }
       async function body() {
         let value = req.body;
