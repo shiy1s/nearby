@@ -59,6 +59,10 @@ node --test test.mjs cloud/test.mjs
 
 The hosted tests use Redis and Blob test doubles. They do not replace testing against a configured Vercel preview deployment.
 
+## Device administration
+
+The hosted circle has one administrator device, provisioned by its opaque device ID (not its editable display name). The initial administrator is Shiyas's laptop pairing. Its three-dot menu on each paired device includes **Delete device**. Other devices see the menu but cannot use the delete action. Removing a device revokes its pairing, removes its direct-chat history, removes it from groups (transferring group ownership when needed), and revokes its file access. To transfer administrator ownership, set the server-only `ADMIN_DEVICE_ID` environment variable to the new device's ID and redeploy. Never use a display name as an authorization identity.
+
 ## Security model
 
 Use a trusted HTTPS connection for network access. Messages and files are not end-to-end encrypted; the host or hosted deployment operator can access transferred data. Pairing is shared-secret based, so only share the pairing secret with people you intend to include. The local server enforces device, request-rate, and upload-concurrency limits. Hosted mode uses Redis-backed rate limiting and a 100-device cap.

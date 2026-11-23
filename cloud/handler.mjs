@@ -6,6 +6,8 @@ const CLEANUP_BATCH = 100;
 const CLEANUP_BUDGET = 1000;
 const LIFE = 24 * 60 * 60 * 1000;
 const SESSION_SECONDS = 34560000;
+// Provisioned admin identity: Shiyas's existing laptop pairing. Override via ADMIN_DEVICE_ID when transferring ownership.
+const DEFAULT_ADMIN_DEVICE_ID = '7d4a6c9c7debfa93ec231a6d95e1e1cdf949cfe03b342c89';
 const id = () => randomBytes(24).toString('hex');
 const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
@@ -152,7 +154,7 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         const registered = await redis.eval("if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[4]) then return 0 end; redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]); redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[5]); return 1", [key('devices'), key('session:' + hash(token))], [user.device, JSON.stringify(user), user.device, MAX_DEVICES, SESSION_SECONDS]);
         if (Number(registered) !== 1) fail(429, 'This private circle has reached its 100-device limit.');
         res.setHeader('Set-Cookie', `nearby=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=34560000`);
-        return reply(200, user);
+        return reply(200, { ...user, isAdmin: user.device === (env.ADMIN_DEVICE_ID || DEFAULT_ADMIN_DEVICE_ID) });
       }
       if (path === '/api/upload' && req.method === 'POST') {
         const data = await body();
@@ -171,12 +173,59 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
       }
       const user = await authenticate();
       await limit('api:' + user.device, 240, 60);
-      if (path === '/api/me' && req.method === 'GET') return reply(200, user);
+      if (path === '/api/me' && req.method === 'GET') return reply(200, { ...user, isAdmin: user.device === (env.ADMIN_DEVICE_ID || DEFAULT_ADMIN_DEVICE_ID) });
       if (path === '/api/state' && req.method === 'GET') {
         await redis.set(key('presence:' + user.device), Date.now(), { ex: 40 });
         const [people, allGroups, history] = await Promise.all([devices(), redis.hgetall(key('groups')), redis.zrange(key('history:' + user.device), 0, -1)]);
         const presence = people.length ? await redis.mget(...people.map(p => key('presence:' + p.device))) : [];
         return reply(200, { peers: people.map((p, i) => ({ ...p, online: Boolean(presence[i]) })), groups: Object.values(allGroups || {}).filter(g => g.members.includes(user.device)), history: history.map(i => typeof i === 'string' ? JSON.parse(i) : i) });
+      }
+      if (path === '/api/devices/delete' && req.method === 'POST') {
+        if (user.device !== (env.ADMIN_DEVICE_ID || DEFAULT_ADMIN_DEVICE_ID)) fail(403, 'Only the administrator can remove paired devices.');
+        await limit('devices-delete:' + user.device, 20, 60);
+        const data = await body();
+        if (typeof data.device !== 'string' || !/^[a-f0-9]{48}$/.test(data.device)) fail(400, 'Choose a valid paired device.');
+        if (data.device === user.device) fail(400, 'The administrator cannot remove their own device.');
+        const removed = await redis.hget(key('devices'), data.device);
+        if (!removed) fail(404, 'That device is no longer paired.');
+
+        const people = await devices();
+        const allGroups = await redis.hgetall(key('groups')) || {};
+        const transaction = redis.multi();
+        // Remove direct-chat history involving this device from every remaining device.
+        for (const person of people) {
+          const history = await redis.zrange(key('history:' + person.device), 0, -1);
+          for (const raw of history) {
+            const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const directToRemoved = item.target === data.device ||
+              (item.sender === data.device && item.target !== 'all' && !String(item.target).startsWith('group-'));
+            if (directToRemoved) transaction.zrem(key('history:' + person.device), typeof raw === 'string' ? raw : JSON.stringify(raw));
+          }
+        }
+        // Keep groups usable: remove the device and transfer ownership to a remaining member.
+        for (const group of Object.values(allGroups)) {
+          if (!group.members.includes(data.device)) continue;
+          const members = group.members.filter(member => member !== data.device);
+          if (!members.length) transaction.hdel(key('groups'), group.id);
+          else transaction.hset(key('groups'), { [group.id]: { ...group, members, owner: group.owner === data.device ? members[0] : group.owner } });
+        }
+        // Revoke the device's access to files. Preserve files still shared with other members.
+        const fileIds = await redis.zrange(key('expiry'), 0, -1);
+        for (const fileId of fileIds) {
+          const fileKey = key('file:' + fileId);
+          const file = await redis.get(fileKey);
+          if (!file || !Array.isArray(file.allowed) || !file.allowed.includes(data.device)) continue;
+          const allowed = file.allowed.filter(device => device !== data.device);
+          if (!allowed.length) {
+            if (file.pathname) await blob.del(file.pathname);
+            transaction.del(fileKey).zrem(key('expiry'), fileId);
+          } else {
+            transaction.set(fileKey, { ...file, allowed });
+          }
+        }
+        transaction.hdel(key('devices'), data.device).del(key('history:' + data.device)).del(key('presence:' + data.device));
+        await transaction.exec();
+        return reply(200, { ok: true, device: data.device, name: removed.name });
       }
       if (path === '/api/groups' && req.method === 'POST') {
         await limit('groups:' + user.device, 10, 3600);

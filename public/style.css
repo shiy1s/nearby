@@ -90,9 +90,18 @@ main { width: 100%; max-width: 1440px; margin: 0 auto; padding: 24px; }
 .filter-chip.active { background: #dff2e7; color: #08745e; }
 .conversation-list { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 4px 7px 12px; }
 .conversation-section { padding: 13px 10px 6px; color: #8a9992; font-size: 9px; font-weight: 800; letter-spacing: 1.15px; text-transform: uppercase; }
-.conversation-row { width: 100%; min-height: 69px; padding: 9px 9px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; }
-.conversation-row:hover { background: #f5f8f6; }
+.conversation-row { position: relative; width: 100%; min-height: 69px; padding: 0 5px 0 0; display: flex; align-items: center; gap: 2px; border-radius: 10px; color: var(--ink); }
+.conversation-row:hover, .conversation-row.selected { background: #f5f8f6; }
 .conversation-row.selected { background: #e9f4ed; }
+.conversation-open { min-width: 0; min-height: 69px; padding: 9px 4px 9px 9px; display: flex; flex: 1; align-items: center; gap: 11px; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; }
+.conversation-open:focus-visible, .device-menu-toggle:focus-visible, .device-delete:focus-visible { outline: 2px solid #16805f; outline-offset: 2px; }
+.device-actions { position: relative; flex: 0 0 auto; }
+.device-menu-toggle { width: 30px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #72827a; font-size: 21px; line-height: 1; }
+.device-menu-toggle:hover, .device-menu-toggle[aria-expanded="true"] { background: #e8f0eb; color: #145b49; }
+.device-menu { position: absolute; z-index: 8; top: 35px; right: 0; min-width: 170px; padding: 5px; border: 1px solid #e1e9e3; border-radius: 10px; background: #fff; box-shadow: 0 12px 30px #173d3026; }
+.device-delete { width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; color: #b42318; text-align: left; font-size: 11px; font-weight: 700; }
+.device-delete:hover:not(:disabled) { background: #fff1f0; }
+.device-delete:disabled { color: #9aa59f; cursor: not-allowed; }
 .conversation-avatar { position: relative; width: 43px; height: 43px; font-size: 14px; }
 .conversation-avatar.everyone { background: #dcefe5; color: #0d725e; font-size: 19px; }
 .conversation-avatar.group { background: #e8e4f5; color: #66559a; font-size: 18px; }
