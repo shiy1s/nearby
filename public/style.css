@@ -153,6 +153,8 @@ main { width: 100%; max-width: 1440px; margin: 0 auto; padding: 24px; }
 .item small { display: block; margin-bottom: 5px; color: #779087; font-size: 9px; font-weight: 600; }
 .item p { margin: 0; color: #203b33; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
 .item a, .item > span { color: #087b67; font-size: 12px; font-weight: 700; line-height: 1.6; text-decoration: none; }
+.item .message-link { color: #087b67; text-decoration: underline; text-decoration-color: #087b6766; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.item .message-link:hover { color: #075e54; text-decoration-color: currentColor; }
 .item a:hover { text-decoration: underline; }
 .message-menu { position: absolute; top: 4px; right: 4px; }
 .menu-toggle { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: #7a8c83; font-size: 18px; line-height: 1; }
