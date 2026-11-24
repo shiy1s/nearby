@@ -154,7 +154,17 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
             try {
               const file = await redis.get(key('file:' + fileId));
               if (file?.pathname) await blob.del(file.pathname);
-              await redis.multi().del(key('file:' + fileId)).zrem(key('expiry'), fileId).exec();
+              const transaction = redis.multi().del(key('file:' + fileId)).zrem(key('expiry'), fileId);
+              // The expiry index is authoritative: remove this file card even if its
+              // serialized history copy has an older expiry timestamp.
+              for (const device of file?.allowed || []) {
+                const history = await redis.zrange(key('history:' + device), 0, -1);
+                for (const raw of history) {
+                  const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                  if (item.id === fileId) transaction.zrem(key('history:' + device), typeof raw === 'string' ? raw : JSON.stringify(raw));
+                }
+              }
+              await transaction.exec();
               removed++; batchRemoved++;
             } catch (error) {
               failed++;
