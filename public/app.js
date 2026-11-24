@@ -332,6 +332,42 @@ $('#chat-filters').addEventListener('click', event => {
 });
 $('#back-to-chats').onclick = () => appShell()?.classList.remove('chat-open');
 
+function appendMessageText(container, text) {
+  const value = String(text ?? '');
+  const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+  let cursor = 0;
+
+  for (const match of value.matchAll(urlPattern)) {
+    let urlText = match[0].replace(/[.,!?;:]+$/, '');
+    while (urlText.endsWith(')') && (urlText.match(/\)/g) || []).length > (urlText.match(/\(/g) || []).length) {
+      urlText = urlText.slice(0, -1);
+    }
+    if (!urlText) continue;
+
+    const start = match.index;
+    if (start > cursor) container.append(document.createTextNode(value.slice(cursor, start)));
+
+    const href = /^www\./i.test(urlText) ? `https://${urlText}` : urlText;
+    let parsed;
+    try { parsed = new URL(href); } catch {}
+    if (parsed && (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname.includes('.')) {
+      const link = document.createElement('a');
+      link.className = 'message-link';
+      link.href = parsed.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = urlText;
+      link.setAttribute('aria-label', `Open link: ${urlText}`);
+      container.append(link);
+    } else {
+      container.append(document.createTextNode(urlText));
+    }
+    cursor = start + urlText.length;
+  }
+
+  if (cursor < value.length) container.append(document.createTextNode(value.slice(cursor)));
+}
+
 function renderFeed(forceBottom = false) {
   const feed = $('#feed');
   const wasNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
@@ -358,7 +394,7 @@ function renderFeed(forceBottom = false) {
     bubble.append(meta);
     if (item.kind === 'message') {
       const message = document.createElement('p');
-      message.textContent = item.text;
+      appendMessageText(message, item.text);
       bubble.append(message);
 
       const menu = document.createElement('div');
