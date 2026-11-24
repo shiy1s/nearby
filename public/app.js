@@ -85,9 +85,10 @@ function receive(item) {
   }
 }
 function itemsFor(channel) {
-  if (channel === 'all' || channel.startsWith('group-')) return items.filter(item => item.target === channel);
+  const active = item => !(item.kind === 'file' && item.expires && item.expires <= Date.now());
+  if (channel === 'all' || channel.startsWith('group-')) return items.filter(item => active(item) && item.target === channel);
   return items.filter(item =>
-    !item.target.startsWith('group-') && item.target !== 'all' &&
+    active(item) && !item.target.startsWith('group-') && item.target !== 'all' &&
     ((item.sender === me.device && item.target === channel) ||
      (item.sender === channel && item.target === me.device))
   );
@@ -444,15 +445,12 @@ function renderFeed(forceBottom = false) {
       menu.append(toggle, actions);
       bubble.append(menu);
     } else {
-      const expired = item.expires && item.expires <= Date.now();
-      const link = document.createElement(expired ? 'span' : 'a');
-      if (!expired) {
-        link.href = `/api/files/${encodeURIComponent(item.id)}`;
-        link.download = item.filename;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-      }
-      link.textContent = `${expired ? 'Expired · ' : '↓ Download · '}${item.filename} · ${size(item.size)}`;
+      const link = document.createElement('a');
+      link.href = `/api/files/${encodeURIComponent(item.id)}`;
+      link.download = item.filename;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = `↓ Download · ${item.filename} · ${size(item.size)}`;
       bubble.append(link);
     }
     feed.append(bubble);
