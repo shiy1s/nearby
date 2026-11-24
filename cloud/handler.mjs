@@ -123,6 +123,28 @@ export function createHandler({ getRedis, blob, handleUpload, env = process.env 
         let removed = 0;
         let failed = 0;
         const deadline = Date.now() + 20000;
+        // Remove expired file cards from every device's stored chat history.
+        // This also repairs stale history left by older cleanup runs that already deleted file metadata.
+        const knownDevices = await devices();
+        const expiredHistory = new Map();
+        for (const person of knownDevices) {
+          const history = await redis.zrange(key('history:' + person.device), 0, -1);
+          for (const raw of history) {
+            const item = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (item.kind === 'file' && item.expires && item.expires <= Date.now()) {
+              if (!expiredHistory.has(person.device)) expiredHistory.set(person.device, []);
+              expiredHistory.get(person.device).push(typeof raw === 'string' ? raw : JSON.stringify(raw));
+            }
+          }
+        }
+        if (expiredHistory.size) {
+          const historyCleanup = redis.multi();
+          for (const [device, members] of expiredHistory) {
+            for (const member of members) historyCleanup.zrem(key('history:' + device), member);
+          }
+          await historyCleanup.exec();
+        }
+
         while (removed + failed < CLEANUP_BUDGET && Date.now() < deadline) {
           const batch = await redis.zrange(key('expiry'), 0, Date.now(), { byScore: true, offset: 0, count: CLEANUP_BATCH });
           if (!batch.length) break;
