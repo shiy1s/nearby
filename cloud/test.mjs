@@ -114,6 +114,8 @@ test('hosted pairing, offline groups, private uploads, expiry and cold starts', 
   assert.equal((await request('/api/cleanup')).statusCode, 401);
   assert.equal((await request('/api/cleanup', null, undefined, { authorization: 'Bearer ' + env.CRON_SECRET })).body.removed, 1);
   assert.equal(stored.has(intent.pathname), false);
+  assert.equal((await request('/api/state', bob)).body.history.some(item => item.id === intent.id), false);
+  assert.equal((await request('/api/state', alice)).body.history.some(item => item.id === intent.id), false);
   // Rewritten Vercel API requests reach the same endpoint.
   assert.equal((await request('/api/index?route=me', bob)).body.device, bob.device);
   const verification = await pair('Verification sender');
